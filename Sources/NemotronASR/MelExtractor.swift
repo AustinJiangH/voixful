@@ -68,9 +68,12 @@ public actor MelExtractor {
         self.fmax = fmax
         self.nFFTBins = fftSize / 2 + 1
 
-        // Hann window — symmetric, vDSP_HANN_NORM matches NumPy/librosa's default.
+        // Hann window — symmetric, NOT normalized. PyTorch's torch.stft / NeMo's
+        // FilterbankFeatures use an UN-normalized Hann (peak amplitude 1.0). Apple's
+        // vDSP_HANN_NORM divides by sum-of-window, which gave us ~14 nats too much
+        // power in log space. Use 0 (no flag) for the un-normalized form that matches.
         var window = [Float](repeating: 0, count: windowSize)
-        vDSP_hann_window(&window, vDSP_Length(windowSize), Int32(vDSP_HANN_NORM))
+        vDSP_hann_window(&window, vDSP_Length(windowSize), 0)
         self.hannWindow = window
 
         // Slaney triangular filterbank.
@@ -135,8 +138,10 @@ public actor MelExtractor {
             let start = t * hopSize
             let end = start + windowSize
             runFrame(samples: samples, start: start, end: end, into: &frame)
-            updateRunningStats(frame: frame)
-            normalize(frame: &frame)
+            // NeMo's preprocessor for this checkpoint has `normalize: 'NA'` —
+            // no per-feature normalization. Applying Welford here gave garbage
+            // output. Keep the running-stats path warm in case a future
+            // checkpoint enables normalization, but skip applying it.
             // Row-major store: row m at offset m * nFrames + t. T is the column index.
             for m in 0..<nMels {
                 out[m * nFrames + t] = frame[m]
@@ -162,8 +167,8 @@ public actor MelExtractor {
             let start = t * hopSize
             let end = start + windowSize
             runFrame(samples: carryoverSamples, start: start, end: end, into: &frame)
-            updateRunningStats(frame: frame)
-            normalize(frame: &frame)
+            // Match NeMo's `normalize: 'NA'` config — no normalization. See
+            // the non-streaming path's comment.
             for m in 0..<nMels {
                 out[m * totalFrames + t] = frame[m]
             }
@@ -238,6 +243,15 @@ public actor MelExtractor {
                 for k in 1..<half {
                     powerSpectrum[k] = midPower[k]
                 }
+                // NeMo's FilterbankFeatures normalizes the power spectrum by
+                // (sum(window))^2 in NumPy/torchaudio convention. For a Hann window
+                // of length 400 the sum is ~200, square ~4e4. Combined with Apple's
+                // 2x FFT scaling (4x in power), the effective divisor is 4 * 200^2 ≈
+                // 1.6e5 = log offset ~11.95 — matches the residual drift after the
+                // 0.25 fix. Apply both as one multiplier.
+                let windowSum = hannWindow.reduce(0, +)
+                var invScale: Float = 0.25 / (windowSum * windowSum)
+                vDSP_vsmul(powerSpectrum, 1, &invScale, &powerSpectrum, 1, vDSP_Length(nFFTBins))
             }
         }
 
@@ -253,8 +267,13 @@ public actor MelExtractor {
             }
         }
 
-        // 4) log(x + 1e-5), elementwise.
-        var offset: Float = 1e-5
+        // 4) log(x + 2^-24), elementwise. NeMo's FilterbankFeatures uses
+        // log_zero_guard_value = 2**(-24) ≈ 5.96e-8, not the 1e-5 PLAN.md
+        // wrote down. The smaller offset matters: it controls the log floor
+        // for near-silent frames. With 1e-5 our mel values landed in roughly
+        // [-12, 0]; the reference is closer to [-16.6, 0.7]. Aligning the
+        // offset brings them into the same range.
+        var offset: Float = Float(1.0 / Float(1 << 24))
         vDSP_vsadd(frame, 1, &offset, &frame, 1, vDSP_Length(nMels))
         var count = Int32(nMels)
         vvlogf(&frame, frame, &count)

@@ -27,8 +27,9 @@
 //   - `maxSymbolsPerStep` is EXACTLY 10 — NeMo's default. Higher risks
 //     catastrophic stutter on noise; lower truncates legitimate consonant
 //     clusters. NOT a knob.
-//   - `blankId` is EXACTLY 13087 — the published checkpoint's blank token id.
-//     The full vocab is 13088 entries (0..=13087) per PLAN.md §2. NOT a knob.
+//   - `blankId` is 1024 for the English-only checkpoint (vocab 0..=1023 are SP
+//     tokens, 1024 is blank; total 1025). The multilingual variant uses 13087
+//     and a 13088-entry vocab, but it's not exercisable today. NOT a runtime knob.
 //   - No beam search. Greedy RNN-T is what Nemotron was trained for; beam
 //     doesn't improve transducer quality the way it does CTC/attention.
 //
@@ -44,7 +45,7 @@ public actor GreedyRNNTDecoder {
 
     /// RNN-T blank token id. Hardcoded to the published checkpoint's value;
     /// NOT a knob (PLAN.md §11 Anti-pattern).
-    public static let blankId: Int32 = 13087
+    public static let blankId: Int32 = 1024
 
     /// Maximum non-blank emits per encoder time step. NeMo's default; the
     /// "stutter safety bound" — without it a misbehaving model can emit the

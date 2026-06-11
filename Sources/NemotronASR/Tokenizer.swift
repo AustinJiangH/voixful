@@ -2,11 +2,11 @@
 //
 // Detokenizes the int32 token ids emitted by the greedy RNN-T decoder back
 // into a UTF-8 string. Nemotron 3.5 ASR uses a SentencePiece BPE vocabulary
-// with 13,087 entries (matches blank id; vocab is 0..=13087 with 13087 also
-// being blank — the joiner produces logits over the full vocab and blank
-// shares the last slot, per PLAN.md §2). The vocabulary includes language
-// tags like `<en-US>`, `<es-ES>`, etc., that the prompt-kernel language
-// conditioning may surface in output — PLAN.md §3 covers the strip option.
+// with 1,024 entries for the English-only checkpoint (vocab is 0..=1023; blank
+// is a separate slot at id 1024, total 1025 joint outputs). The multilingual
+// variant has 13,087 entries with `<en-US>` / `<es-ES>` style lang tags;
+// `stripLangTags` filters those (no-op for the English-only model since
+// no lang tags exist in its vocab).
 //
 // # Contract
 //

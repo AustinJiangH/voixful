@@ -120,6 +120,16 @@ public actor StreamingASR {
     /// time we need to repack frames into the encoder's `[1, 128, T]` shape.
     private static let nMels: Int = 128
 
+    /// The fixed mel-frame count the converted `.aimodel` accepts. The current
+    /// convert.py pins T=128 (smallest multiple of 8 ≥ 121, the streaming-cfg
+    /// minimum) because coreai_torch 0.4.0 hits a dynamic-shape lowering bug
+    /// on `aten.repeat`. Once that's fixed upstream we can re-introduce the
+    /// `ChunkSize` dial and export a variable-T encoder.
+    ///
+    /// `ChunkSize` is still surfaced on the public API for forward compat —
+    /// today every chunk-size case routes through this same T=128 hardcode.
+    private static let encoderFramesPerChunk: Int = 128
+
     // MARK: - Init
 
     /// Construct a `StreamingASR` session.
@@ -287,7 +297,7 @@ public actor StreamingASR {
 
         // Now consume as many chunks as we have. Each chunk needs
         // `chunkSize.totalFrames` mel frames.
-        let framesPerChunk = chunkSize.totalFrames
+        let framesPerChunk = Self.encoderFramesPerChunk
         var partials: [PartialHypothesis] = []
 
         while melBufferFrames >= framesPerChunk {
@@ -388,7 +398,7 @@ public actor StreamingASR {
         // tail-token drift caused by this padding. If NeMo's reference uses
         // a different padding convention (e.g., reflect, or right-context
         // truncation with a shorter final chunk), match it here.
-        let framesPerChunk = chunkSize.totalFrames
+        let framesPerChunk = Self.encoderFramesPerChunk
         if melBufferFrames > 0 && melBufferFrames < framesPerChunk {
             // Zero-pad the mel buffer in row-major order: each row m gets
             // (framesPerChunk - melBufferFrames) zeros appended after its

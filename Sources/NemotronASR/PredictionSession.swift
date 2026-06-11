@@ -103,7 +103,9 @@ public actor PredictionSession {
         self.lastEmbedding = NDArray(shape: [1, 1, 640], scalarType: .float32)
 
         // Pre-allocate the 1-element prev_token scratch buffer.
-        self.prevTokenScratch = NDArray(shape: [1], scalarType: .int32)
+        // [1, 1] matches the exported predict_step's input contract: NeMo's
+        // RNNTDecoder.predict expects targets shaped [B, U].
+        self.prevTokenScratch = NDArray(shape: [1, 1], scalarType: .int32)
     }
 
     // MARK: - Read accessor

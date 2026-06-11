@@ -44,7 +44,10 @@ public actor EncoderSession {
         // `get_initial_cache_state` / `input_example` (batch-first layout).
         self.cacheLastChannel = NDArray(shape: [1, 24, 70, 1024], scalarType: .float32)
         self.cacheLastTime = NDArray(shape: [1, 24, 1024, 8], scalarType: .float32)
-        self.cacheLastChannelLen = NDArray(shape: [1], scalarType: .int64)
+        // The converted .aimodel reports this state as int32 even though
+        // NeMo's get_initial_cache_state returns int64 — the coreai_torch
+        // export lowers it during conversion. Match the .aimodel contract.
+        self.cacheLastChannelLen = NDArray(shape: [1], scalarType: .int32)
     }
 
     // MARK: - Forward
@@ -82,6 +85,6 @@ public actor EncoderSession {
     public func reset() async {
         cacheLastChannel.zeroFloat32()
         cacheLastTime.zeroFloat32()
-        cacheLastChannelLen.zeroInt64()
+        cacheLastChannelLen.zeroInt32()
     }
 }
