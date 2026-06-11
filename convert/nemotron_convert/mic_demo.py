@@ -40,13 +40,13 @@ def main() -> int:
     parser.add_argument(
         "--window-seconds",
         type=float,
-        default=6.0,
+        default=4.0,
         help="Rolling buffer length the model sees on each transcribe call.",
     )
     parser.add_argument(
         "--hop-seconds",
         type=float,
-        default=0.6,
+        default=0.8,
         help="How often to run transcribe (smaller = lower latency, more CPU).",
     )
     parser.add_argument(
