@@ -258,36 +258,15 @@ struct FileCommand: AsyncParsableCommand {
             throw ExitCode.failure
         }
 
-        await asr.start()
-
-        // Feed in 100 ms slabs (1600 samples each @ 16 kHz) to exercise the
-        // streaming path. Smaller than any chunkSize.totalFrames * hop so the
-        // mel-frame buffering / encoder dispatch logic in `StreamingASR.feed`
-        // runs the realistic streaming loop, not a single big batch.
-        //
-        // VERIFY: 1600-sample slab is intentionally hardcoded; it's a
-        // streaming-path-exercise convention, not a model parameter. Phase 7's
-        // mic path naturally produces slabs near this size (AVAudioEngine tap
-        // typical buffer is ~1024-4096 frames @ HW rate, post-conversion).
-        let slabSamples = 1600
-        var idx = 0
-        while idx < samples.count {
-            let end = min(idx + slabSamples, samples.count)
-            let slab = Array(samples[idx..<end])
-            do {
-                _ = try await asr.feed(slab)
-            } catch {
-                writeStderr("error: feed(...) failed at offset \(idx): \(error)")
-                throw ExitCode.failure
-            }
-            idx = end
-        }
-
+        // One-shot transcription: uses the non-streaming mel path (preemph
+        // + reflect-pad applied to the whole buffer) for exact NeMo parity.
+        // The streaming `feed(...)` path is for live mic where audio length
+        // is unknown; this is a file with known length.
         let transcript: Transcript
         do {
-            transcript = try await asr.finish()
+            transcript = try await asr.transcribe(audio: samples)
         } catch {
-            writeStderr("error: finish() failed: \(error)")
+            writeStderr("error: transcribe(audio:) failed: \(error)")
             throw ExitCode.failure
         }
 
@@ -550,38 +529,33 @@ struct MicCommand: AsyncParsableCommand {
         // mic subcommand share one source of truth. The 0.005 RMS / 500 ms
         // silence values are placeholders; see PLAN.md §7 Phase 7 / §10 open
         // question on VAD strategy.
+        // VAD-driven utterance accumulator. We DON'T stream audio into the
+        // encoder per buffer (the streaming mel path skips reflect-pad and
+        // produces inaccurate features). Instead, accumulate raw audio into
+        // `utterance`; on N consecutive silent VAD windows after speech,
+        // call `asr.transcribe(audio:)` on the whole utterance — same
+        // accurate path the `file` subcommand uses.
         let vadWindowSamples = VADDefaults.windowSamples
         let energyThreshold = VADDefaults.energyThreshold
         let silenceWindowsToFinish = VADDefaults.silenceWindowsToFinish
 
         var silenceWindowRun = 0
         var hasSeenSpeech = false
-        var leftover: [Float] = []  // for sub-vad-window remainder
+        var leftover: [Float] = []          // sub-VAD-window remainder
+        var utterance: [Float] = []         // raw audio for the current utterance
 
-        // Loop until Ctrl+C, then drain once more and finalize.
+        // Suppress the AVAudioEngine input-format warnings ("format does not
+        // match input scope") — they spam stderr but don't affect us.
+        FileHandle.standardError.write("[mic] Listening. Speak — pause to finalize each line. Ctrl+C to stop.\n".data(using: .utf8)!)
+
         while !micShouldExit {
             let pulled = await buffer.drain()
             if pulled.isEmpty {
-                // No new audio yet — yield to avoid spinning. Sleep ~20 ms
-                // (one VAD window's worth); the AVAudioEngine tap typically
-                // posts every 20-40 ms anyway.
                 try? await Task.sleep(nanoseconds: 20_000_000)
                 continue
             }
 
-            // Feed to ASR. This runs the mel extractor + encoder + decoder.
-            do {
-                let partials = try await asr.feed(pulled)
-                for partial in partials {
-                    print("[partial] \(partial.text)")
-                }
-            } catch {
-                writeStderr("error: feed(...) failed: \(error)")
-                // Tear down rather than spin on a recurring error.
-                engine.stop()
-                inputNode.removeTap(onBus: 0)
-                throw ExitCode.failure
-            }
+            utterance.append(contentsOf: pulled)
 
             // VAD: compute RMS per 20 ms window over (leftover + pulled).
             var combined = leftover
@@ -595,14 +569,18 @@ struct MicCommand: AsyncParsableCommand {
                 } else if hasSeenSpeech {
                     silenceWindowRun += 1
                     if silenceWindowRun >= silenceWindowsToFinish {
-                        // End-of-utterance: finalize, print, start fresh.
+                        // End-of-utterance: transcribe the accumulated audio
+                        // via the non-streaming (preemph + reflect-pad) path.
                         do {
-                            let transcript = try await asr.finish()
-                            print(transcript.text)
+                            let transcript = try await asr.transcribe(audio: utterance)
+                            let text = transcript.text.trimmingCharacters(in: .whitespaces)
+                            if !text.isEmpty {
+                                print(text); fflush(stdout)
+                            }
                         } catch {
-                            writeStderr("error: finish() failed at utterance boundary: \(error)")
+                            writeStderr("error: transcribe failed: \(error)")
                         }
-                        await asr.start()
+                        utterance.removeAll(keepingCapacity: true)
                         silenceWindowRun = 0
                         hasSeenSpeech = false
                     }
@@ -612,22 +590,22 @@ struct MicCommand: AsyncParsableCommand {
             leftover = Array(combined[w..<combined.count])
         }
 
-        // Ctrl+C path: drain remaining audio, finalize once, print, exit 0.
         engine.stop()
         inputNode.removeTap(onBus: 0)
         await buffer.close()
 
-        let tail = await buffer.drain()
-        if !tail.isEmpty {
-            _ = try? await asr.feed(tail)
-        }
-
-        do {
-            let transcript = try await asr.finish()
-            print(transcript.text)
-        } catch {
-            writeStderr("error: final finish() failed: \(error)")
-            throw ExitCode.failure
+        // Flush a final utterance if there's audio left.
+        if hasSeenSpeech && !utterance.isEmpty {
+            do {
+                let transcript = try await asr.transcribe(audio: utterance)
+                let text = transcript.text.trimmingCharacters(in: .whitespaces)
+                if !text.isEmpty {
+                    print(text); fflush(stdout)
+                }
+            } catch {
+                writeStderr("error: final transcribe failed: \(error)")
+                throw ExitCode.failure
+            }
         }
     }
 }

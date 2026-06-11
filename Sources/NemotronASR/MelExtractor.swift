@@ -36,8 +36,14 @@ public actor MelExtractor {
 
     // MARK: - Streaming state
 
-    /// Rolling buffer of samples carried over from prior `extractStreaming` calls.
+    /// Rolling buffer of preemphasized samples carried over from prior `extractStreaming` calls.
     private var carryoverSamples: [Float] = []
+    /// Last RAW sample fed in (preemph state); used to apply preemph across
+    /// streaming-call boundaries: `y[i] = x[i] - 0.97 * x[i-1]`.
+    private var preemphLastRawSample: Float = 0
+    /// True once we've seen ANY input; flips the first-sample preemph behavior
+    /// (the very first sample of an utterance passes through unchanged).
+    private var preemphSeenAny: Bool = false
     /// Welford running mean per mel bin, length `nMels`.
     private var runningMean: [Float]
     /// Welford running variance accumulator (M2) per mel bin, length `nMels`.
@@ -120,6 +126,8 @@ public actor MelExtractor {
 
     public func reset() {
         carryoverSamples.removeAll(keepingCapacity: true)
+        preemphLastRawSample = 0
+        preemphSeenAny = false
         for i in 0..<nMels {
             runningMean[i] = 0
             runningM2[i] = 0
@@ -129,20 +137,29 @@ public actor MelExtractor {
 
     /// Non-streaming: process the entire buffer, return row-major `[nMels × T]` flattened.
     public func extract(samples: [Float]) -> [Float] {
-        guard samples.count >= windowSize else { return [] }
-        let nFrames = (samples.count - windowSize) / hopSize + 1
+        // NeMo's pipeline (verified 2026-06-11 against FilterbankFeatures source):
+        //   1. Pre-emphasis: x[i] -= 0.97 * x[i-1] (for i >= 1; x[0] unchanged)
+        //   2. STFT with center=True, pad_mode='reflect' → input reflect-padded by
+        //      n_fft / 2 = 256 samples on each side BEFORE windowing.
+        //   3. Power spectrum (mag_power=2.0): |stft|^2
+        //   4. Mel filterbank multiply, log(x + 2^-24).
+        //
+        // We mirror steps 1+2 here so frame timings match torch.stft exactly.
+        let prepared = preemphasizeAndPad(samples: samples)
+        guard prepared.count >= windowSize else { return [] }
+
+        // With center=True padding, the frame count is ceil(N / hop) for input
+        // length N. Equivalent to (N + hop - 1) / hop. Using floor division on
+        // the padded length gives the same answer for our hop=160 / win=400 /
+        // pad=256 setup.
+        let nFrames = (prepared.count - windowSize) / hopSize + 1
         var out = [Float](repeating: 0, count: nMels * nFrames)
         var frame = [Float](repeating: 0, count: nMels)
 
         for t in 0..<nFrames {
             let start = t * hopSize
             let end = start + windowSize
-            runFrame(samples: samples, start: start, end: end, into: &frame)
-            // NeMo's preprocessor for this checkpoint has `normalize: 'NA'` —
-            // no per-feature normalization. Applying Welford here gave garbage
-            // output. Keep the running-stats path warm in case a future
-            // checkpoint enables normalization, but skip applying it.
-            // Row-major store: row m at offset m * nFrames + t. T is the column index.
+            runFrame(samples: prepared, start: start, end: end, into: &frame)
             for m in 0..<nMels {
                 out[m * nFrames + t] = frame[m]
             }
@@ -150,11 +167,64 @@ public actor MelExtractor {
         return out
     }
 
+    /// Apply pre-emphasis filter and torch.stft-style reflect padding.
+    ///
+    /// Pre-emphasis (preemph=0.97): `y[i] = x[i] - 0.97 * x[i-1]`, with `y[0] = x[0]`.
+    /// Reflect padding: prepend `x[fftSize/2..1]` reversed and append `x[N-2..N-fftSize/2-1]`
+    /// reversed, matching torch.stft(center=True, pad_mode='reflect').
+    private func preemphasizeAndPad(samples: [Float]) -> [Float] {
+        let n = samples.count
+        if n == 0 { return [] }
+
+        // 1. Pre-emphasis (in a fresh buffer to avoid mutating the caller's input).
+        var pe = [Float](repeating: 0, count: n)
+        pe[0] = samples[0]
+        for i in 1..<n {
+            pe[i] = samples[i] - 0.97 * samples[i - 1]
+        }
+
+        // 2. Reflect padding by fftSize/2 on each side. PyTorch reflect padding
+        // skips the boundary sample itself: for input [a, b, c, d], pad 2 on the
+        // left → [c, b, a, b, c, d, c, b]. So pad[k] for k in 1..=pad = pe[k].
+        let pad = fftSize / 2
+        let cappedPad = min(pad, n - 1)  // PyTorch caps reflect pad at len-1
+        var padded = [Float]()
+        padded.reserveCapacity(n + 2 * cappedPad)
+        // Left reflect: pe[pad..1] in reverse order (i.e., pe[pad], pe[pad-1], ..., pe[1])
+        for k in stride(from: cappedPad, through: 1, by: -1) {
+            padded.append(pe[k])
+        }
+        padded.append(contentsOf: pe)
+        // Right reflect: pe[n-2..n-pad-1]
+        for k in stride(from: n - 2, through: max(0, n - cappedPad - 1), by: -1) {
+            padded.append(pe[k])
+        }
+        return padded
+    }
+
     /// Streaming: append `samples` to the carryover, process every full hop available,
     /// return the consumed frames row-major `[nMels × T_consumed]` flattened. Returns
     /// `nil` when no full frame can be produced yet.
     public func extractStreaming(samples: [Float]) -> [Float]? {
-        carryoverSamples.append(contentsOf: samples)
+        // Apply preemph incrementally across streaming-call boundaries.
+        // `preemphLastRawSample` is the raw (non-preemphasized) sample from
+        // the previous call; for the very first sample of an utterance we
+        // pass it through unchanged (matches NeMo's `y[0] = x[0]` boundary).
+        var preemphed = [Float](repeating: 0, count: samples.count)
+        for (i, s) in samples.enumerated() {
+            if i == 0 && !preemphSeenAny {
+                preemphed[i] = s
+            } else if i == 0 {
+                preemphed[i] = s - 0.97 * preemphLastRawSample
+            } else {
+                preemphed[i] = s - 0.97 * samples[i - 1]
+            }
+        }
+        if !samples.isEmpty {
+            preemphLastRawSample = samples[samples.count - 1]
+            preemphSeenAny = true
+        }
+        carryoverSamples.append(contentsOf: preemphed)
         guard carryoverSamples.count >= windowSize else { return nil }
 
         let totalFrames = (carryoverSamples.count - windowSize) / hopSize + 1
@@ -243,14 +313,10 @@ public actor MelExtractor {
                 for k in 1..<half {
                     powerSpectrum[k] = midPower[k]
                 }
-                // NeMo's FilterbankFeatures normalizes the power spectrum by
-                // (sum(window))^2 in NumPy/torchaudio convention. For a Hann window
-                // of length 400 the sum is ~200, square ~4e4. Combined with Apple's
-                // 2x FFT scaling (4x in power), the effective divisor is 4 * 200^2 ≈
-                // 1.6e5 = log offset ~11.95 — matches the residual drift after the
-                // 0.25 fix. Apply both as one multiplier.
-                let windowSum = hannWindow.reduce(0, +)
-                var invScale: Float = 0.25 / (windowSum * windowSum)
+                // torch.stft does NOT normalize. Only Apple's vDSP_fft_zrip
+                // doubles the amplitude vs the math DFT (4x in power); undo
+                // that with /4.
+                var invScale: Float = 0.25
                 vDSP_vsmul(powerSpectrum, 1, &invScale, &powerSpectrum, 1, vDSP_Length(nFFTBins))
             }
         }

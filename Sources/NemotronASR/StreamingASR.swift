@@ -205,7 +205,15 @@ public actor StreamingASR {
         //      models" session)
         // Phase 1 / Phase 6 pick the convention. If it changes, update both
         // the `convert/` packaging step AND this URL construction.
-        let vocabURL = modelURL.deletingLastPathComponent().appendingPathComponent("vocab.txt")
+        // Prefer pieces.txt (SentencePiece pieces, ▁-prefixed) if present.
+        // vocab.txt in the .nemo archive is BERT-WordPiece-style (##-prefixed)
+        // and does NOT match the SP token IDs the model emits — using it
+        // produces garbage like "##b".
+        let parentDir = modelURL.deletingLastPathComponent()
+        let piecesURL = parentDir.appendingPathComponent("pieces.txt")
+        let vocabURL = FileManager.default.fileExists(atPath: piecesURL.path)
+            ? piecesURL
+            : parentDir.appendingPathComponent("vocab.txt")
         self.tokenizer = try Tokenizer(vocabURL: vocabURL)
 
         // Build the language one-hot vector exactly once. Reused on every
@@ -386,6 +394,63 @@ public actor StreamingASR {
     /// Does NOT call `start()` internally; the caller drives the next
     /// utterance by calling `start()` again. This keeps the lifecycle
     /// explicit per the actor's documented contract.
+    /// One-shot transcription for a complete recording. Bypasses the
+    /// streaming mel path (no preemph-across-call carryover, no per-call
+    /// reflect-pad gaps) by running the non-streaming `extract(samples:)` once
+    /// on the whole audio buffer, then driving the encoder/decoder in
+    /// 128-frame chunks. Use this for `nemotron-asr file` where the audio
+    /// length is known up front; for live mic use `feed(...)` + `finish()`.
+    public func transcribe(audio: [Float]) async throws -> Transcript {
+        await self.start()
+        let mel = await melExtractor.extract(samples: audio)
+        let framesPerChunk = Self.encoderFramesPerChunk
+        let totalFrames = mel.count / Self.nMels
+        if totalFrames == 0 {
+            return Transcript(text: "", segments: [], language: language.rawValue)
+        }
+
+        // Process the mel matrix in 128-frame chunks. Last chunk is zero-padded
+        // to T=128 if shorter (the fixed-shape encoder accepts only T=128).
+        var chunkStart = 0
+        while chunkStart < totalFrames {
+            let chunkEnd = min(chunkStart + framesPerChunk, totalFrames)
+            let consumeFrames = chunkEnd - chunkStart
+
+            // Build a [1, 128, 128] mel NDArray for this chunk. Source mel is
+            // row-major [nMels × totalFrames]; the encoder wants [1, 128, 128]
+            // (also row-major, where m stride is 128).
+            var chunkMel = NDArray(shape: [1, Self.nMels, framesPerChunk], scalarType: .float32)
+            var chunkMelView = chunkMel.mutableView(as: Float.self)
+            chunkMelView.withUnsafeMutablePointer { ptr, _, _ in
+                for m in 0..<Self.nMels {
+                    for t in 0..<consumeFrames {
+                        ptr[m * framesPerChunk + t] = mel[m * totalFrames + (chunkStart + t)]
+                    }
+                    // Pad remaining columns with zeros.
+                    for t in consumeFrames..<framesPerChunk {
+                        ptr[m * framesPerChunk + t] = 0
+                    }
+                }
+            }
+
+            var melLength = NDArray(shape: [1], scalarType: .int32)
+            melLength.setInt32(at: 0, to: Int32(consumeFrames))
+            let encOut = try await encoder.forward(mel: chunkMel, melLength: melLength)
+            let newTokens = try await decoder.decode(encoderOutput: encOut)
+            allEmittedTokens.append(contentsOf: newTokens)
+
+            chunkStart = chunkEnd
+        }
+
+        let fullText = await tokenizer.decode(tokens: allEmittedTokens, stripLangTags: true)
+        let segment = Transcript.Segment(
+            text: fullText,
+            startTime: 0,
+            endTime: Double(audio.count) / 16000.0
+        )
+        return Transcript(text: fullText, segments: [segment], language: language.rawValue)
+    }
+
     public func finish() async throws -> Transcript {
         // If we have any leftover mel frames (< framesPerChunk), pad them
         // with zeros to a full chunk and run the encoder one last time.
