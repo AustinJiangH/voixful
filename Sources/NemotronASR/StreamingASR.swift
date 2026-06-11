@@ -448,65 +448,73 @@ public actor StreamingASR {
         var perf = PerfCounters()
         perf.audioMs = Double(audio.count) / 16.0  // ms (16 kHz)
 
-        let chunkSamples = PreprocessSession.audioSamples
+        let chunkSamples = PreprocessSession.chunkSamples          // 20320
+        let leftContext = PreprocessSession.leftContextSamples     // 512
+        let inputSamples = PreprocessSession.audioSamples          // 20832
         let framesPerChunk = Self.encoderFramesPerChunk
 
-        // Prepend silence chunks so the encoder's cache-aware K/V state
-        // warms up before real speech hits. The cache window is 70 frames
-        // (~0.7 s); each warmup chunk contributes ~14 frames. Without
-        // warmup, the encoder produces "cold-cache" embeddings for the
-        // first ~3 output frames (~0.3 s), the joiner emits blank for
-        // those, and the first word(s) of the utterance get lost — even
-        // with SOS predictor warmup. The extra chunks cost ~50 ms of
-        // wall-clock each; 2 chunks is a good balance (recovers "The
-        // Quick" on the bundled sample without bloating cold-start).
+        // Prepend a chunk of silence to warm the encoder's cache. Combined
+        // with the stream-aware preprocessor (which uses real left context
+        // for non-first chunks), this restores the leading words that
+        // cold-cache alone was eating.
         let warmupChunks = 1
         var workingAudio = [Float](repeating: 0, count: warmupChunks * chunkSamples)
         workingAudio.append(contentsOf: audio)
-        let audio = workingAudio  // shadow the parameter
+        let audio = workingAudio
 
-        // Pipeline: while the decoder is chewing chunk N's encoder output on
-        // the CPU + a stream of small ANE calls, we kick off chunk N+1's
-        // preprocess + encoder on the ANE. The encoder is cache-aware so its
-        // calls MUST be serial (each one reads the previous one's cache
-        // state); we exploit that by running encoder N+1 immediately after
-        // encoder N's await returns (state is committed), in a fresh Task.
-        //
-        // Wins: the decode's ~12 ms/chunk overlaps with the next chunk's
-        // ~32 ms/chunk preprocess+encode. The savings depend on whether the
-        // ANE serializes encoder+joiner calls at the hardware level (it
-        // likely does in practice), so we measure rather than promise.
-
-        // Pre-allocate input buffers once. NDArrays carry their own backing
-        // store so we reuse them across chunks via mutableView() writes.
-        var audioND = NDArray(shape: [1, chunkSamples], scalarType: .float32)
+        // Pre-allocate input buffers once.
+        var audioND = NDArray(shape: [1, inputSamples], scalarType: .float32)
         var lengthND = NDArray(shape: [1], scalarType: .int32)
-        lengthND.setInt32(at: 0, to: Int32(chunkSamples))
+        lengthND.setInt32(at: 0, to: Int32(inputSamples))
         var melLength = NDArray(shape: [1], scalarType: .int32)
         melLength.setInt32(at: 0, to: Int32(framesPerChunk))
 
-        // Helper to do copy + preprocess + encode and return the encoder output.
-        // Captures `audioND` etc. by-value via implicit copy.
+        // Fill `audioND` for the chunk starting at `chunkStart` (an offset
+        // into `audio`). The first `leftContext` slots hold real samples
+        // from `audio[chunkStart-leftContext..<chunkStart]` (the previous
+        // chunk's tail) so the preprocessor doesn't have to reflect-pad
+        // the chunk's start. For chunkStart < leftContext, the missing
+        // prefix is zero-filled (matches silence-at-utterance-start).
         func runUpToEncoder(chunkStart: Int, realSamples: Int) async throws -> (NDArray, Double, Double, Double) {
-            // 1. Sample copy (CPU).
             let cpyStart = Date()
             var av = audioND.mutableView(as: Float.self)
             av.withUnsafeMutablePointer { ptr, _, _ in
                 audio.withUnsafeBufferPointer { src in
-                    ptr.update(from: src.baseAddress!.advanced(by: chunkStart), count: realSamples)
+                    // Left context.
+                    if chunkStart >= leftContext {
+                        ptr.update(
+                            from: src.baseAddress!.advanced(by: chunkStart - leftContext),
+                            count: leftContext
+                        )
+                    } else {
+                        let zeroPrefix = leftContext - chunkStart
+                        ptr.update(repeating: 0, count: zeroPrefix)
+                        if chunkStart > 0 {
+                            ptr.advanced(by: zeroPrefix).update(
+                                from: src.baseAddress!,
+                                count: chunkStart
+                            )
+                        }
+                    }
+                    // Chunk audio.
+                    ptr.advanced(by: leftContext).update(
+                        from: src.baseAddress!.advanced(by: chunkStart),
+                        count: realSamples
+                    )
                 }
+                // Pad the right side with zeros if the last chunk is short.
                 if realSamples < chunkSamples {
-                    ptr.advanced(by: realSamples).update(repeating: 0, count: chunkSamples - realSamples)
+                    ptr.advanced(by: leftContext + realSamples).update(
+                        repeating: 0, count: chunkSamples - realSamples
+                    )
                 }
             }
             let cpyMs = Date().timeIntervalSince(cpyStart) * 1000
 
-            // 2. Preprocess (ANE).
             let preStart = Date()
             let mel = try await preprocess.extract(audio: audioND, length: lengthND)
             let preMs = Date().timeIntervalSince(preStart) * 1000
 
-            // 3. Encoder (ANE).
             let encStart = Date()
             let encOut = try await encoder.forward(mel: mel, melLength: melLength)
             let encMs = Date().timeIntervalSince(encStart) * 1000
@@ -514,13 +522,11 @@ public actor StreamingASR {
             return (encOut, cpyMs, preMs, encMs)
         }
 
-        // Walk the audio in chunks. Maintain a "next chunk's encoder output"
-        // task that runs concurrently with the current chunk's decoder.
+        // Walk the audio in chunks of `chunkSamples` stride.
         let totalChunks = (audio.count + chunkSamples - 1) / chunkSamples
         var currentEncOut: NDArray
         var currentTimings: (cpy: Double, pre: Double, enc: Double)
         do {
-            // Chunk 0 runs synchronously to seed the pipeline.
             let chunkEnd = min(chunkSamples, audio.count)
             let realSamples = chunkEnd - 0
             let (encOut, cpyMs, preMs, encMs) = try await runUpToEncoder(
@@ -531,10 +537,6 @@ public actor StreamingASR {
         }
 
         for chunkIdx in 0..<totalChunks {
-            // Kick off chunk N+1's preprocess+encoder as a Task so it runs
-            // concurrently with chunk N's decoder. Captured `audioND` is a
-            // single shared buffer — the encoder doesn't retain it past its
-            // own call, so it's safe to mutate after `runUpToEncoder` returns.
             let nextStart = (chunkIdx + 1) * chunkSamples
             let nextTask: Task<(NDArray, Double, Double, Double), Error>? = nextStart < audio.count
                 ? Task {
