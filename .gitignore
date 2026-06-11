@@ -1,0 +1,35 @@
+# Swift
+.build/
+*.xcodeproj/xcuserdata/
+# Package.resolved IS committed — do not ignore it.
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+*.egg-info/
+
+# macOS
+.DS_Store
+
+# Model artifacts
+*.aimodel
+*.nemo
+*.pt
+models/
+
+# Audio (allow fixtures)
+*.wav
+!fixtures/*.wav
+
+# Test fixtures: explicitly allow committed fixture files
+# (vocab files and the fixtures README live in git; mel_reference.bin
+# and the aimodel/ directory are regenerated locally — see fixtures/README.md).
+!fixtures/*.md
+!fixtures/vocab.*
+
+# IDE
+.vscode/
+.idea/
