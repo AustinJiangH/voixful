@@ -543,6 +543,9 @@ struct MicCommand: AsyncParsableCommand {
         var hasSeenSpeech = false
         var leftover: [Float] = []          // sub-VAD-window remainder
         var utterance: [Float] = []         // raw audio for the current utterance
+        var lastPartialAt: TimeInterval = 0 // wall-clock of last partial
+        var lastPartialText = ""            // last printed partial (for in-place overwrites)
+        let partialIntervalSec: TimeInterval = 1.0  // how often to update partials
 
         // Suppress the AVAudioEngine input-format warnings ("format does not
         // match input scope") — they spam stderr but don't affect us.
@@ -569,25 +572,57 @@ struct MicCommand: AsyncParsableCommand {
                 } else if hasSeenSpeech {
                     silenceWindowRun += 1
                     if silenceWindowRun >= silenceWindowsToFinish {
-                        // End-of-utterance: transcribe the accumulated audio
-                        // via the non-streaming (preemph + reflect-pad) path.
+                        // End-of-utterance: finalize. Erase the partial line
+                        // (\r + pad spaces + \r), then print the final on its
+                        // own line so it persists in scrollback.
                         do {
                             let transcript = try await asr.transcribe(audio: utterance)
                             let text = transcript.text.trimmingCharacters(in: .whitespaces)
+                            let pad = String(repeating: " ", count: max(0, lastPartialText.count + 2))
                             if !text.isEmpty {
-                                print(text); fflush(stdout)
+                                print("\r\(pad)\r\(text)")
+                            } else if !lastPartialText.isEmpty {
+                                print("\r\(pad)\r", terminator: "")
                             }
+                            fflush(stdout)
                         } catch {
                             writeStderr("error: transcribe failed: \(error)")
                         }
                         utterance.removeAll(keepingCapacity: true)
                         silenceWindowRun = 0
                         hasSeenSpeech = false
+                        lastPartialText = ""
+                        lastPartialAt = 0
                     }
                 }
                 w += vadWindowSamples
             }
             leftover = Array(combined[w..<combined.count])
+
+            // Partial update during active speech: every partialIntervalSec,
+            // run transcribe on what we've accumulated and overwrite the
+            // current terminal line. We skip until we have at least 1.2s of
+            // audio so the encoder's 128-frame minimum chunk is satisfied.
+            let nowMono = CFAbsoluteTimeGetCurrent()
+            if hasSeenSpeech
+                && silenceWindowRun == 0
+                && utterance.count >= 20000
+                && nowMono - lastPartialAt >= partialIntervalSec
+            {
+                lastPartialAt = nowMono
+                do {
+                    let transcript = try await asr.transcribe(audio: utterance)
+                    let text = transcript.text.trimmingCharacters(in: .whitespaces)
+                    if text != lastPartialText {
+                        let pad = String(repeating: " ", count: max(0, lastPartialText.count - text.count))
+                        print("\r\(text)\(pad)", terminator: "")
+                        fflush(stdout)
+                        lastPartialText = text
+                    }
+                } catch {
+                    // Silent — partials are best-effort.
+                }
+            }
         }
 
         engine.stop()

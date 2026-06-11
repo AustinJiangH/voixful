@@ -54,6 +54,7 @@ public actor StreamingASR {
 
     // MARK: - Sessions
 
+    private let preprocess: PreprocessSession
     private let encoder: EncoderSession
     private let prediction: PredictionSession
     private let joiner: JoinerSession
@@ -176,6 +177,7 @@ public actor StreamingASR {
         // and PredictionSession each own state buffers; JoinerSession is
         // stateless. Any of these can throw `missingFunction` if the .aimodel
         // doesn't contain the named function — that error propagates here as-is.
+        self.preprocess = try await PreprocessSession(model: model)
         self.encoder = try await EncoderSession(model: model)
         self.prediction = try await PredictionSession(model: model)
         self.joiner = try await JoinerSession(model: model)
@@ -402,40 +404,42 @@ public actor StreamingASR {
     /// length is known up front; for live mic use `feed(...)` + `finish()`.
     public func transcribe(audio: [Float]) async throws -> Transcript {
         await self.start()
-        let mel = await melExtractor.extract(samples: audio)
-        let framesPerChunk = Self.encoderFramesPerChunk
-        let totalFrames = mel.count / Self.nMels
-        if totalFrames == 0 {
-            return Transcript(text: "", segments: [], language: language.rawValue)
-        }
 
-        // Process the mel matrix in 128-frame chunks. Last chunk is zero-padded
-        // to T=128 if shorter (the fixed-shape encoder accepts only T=128).
+        // Process audio in fixed 20480-sample (1.28 s @ 16 kHz) chunks. Each
+        // chunk goes through preprocess (audio → [1, 128, 128] mel) on the ANE,
+        // then encoder → decoder. The streaming caches in EncoderSession +
+        // PredictionSession carry context across chunks, so we get the same
+        // RNN-T behaviour as a single big batch on a streaming model.
+        let chunkSamples = PreprocessSession.audioSamples  // 20480
+        let framesPerChunk = Self.encoderFramesPerChunk     // 128
+
         var chunkStart = 0
-        while chunkStart < totalFrames {
-            let chunkEnd = min(chunkStart + framesPerChunk, totalFrames)
-            let consumeFrames = chunkEnd - chunkStart
+        // Reuse a single audio NDArray across all chunks. Allocate once.
+        var audioND = NDArray(shape: [1, chunkSamples], scalarType: .float32)
+        var lengthND = NDArray(shape: [1], scalarType: .int32)
+        lengthND.setInt32(at: 0, to: Int32(chunkSamples))
 
-            // Build a [1, 128, 128] mel NDArray for this chunk. Source mel is
-            // row-major [nMels × totalFrames]; the encoder wants [1, 128, 128]
-            // (also row-major, where m stride is 128).
-            var chunkMel = NDArray(shape: [1, Self.nMels, framesPerChunk], scalarType: .float32)
-            var chunkMelView = chunkMel.mutableView(as: Float.self)
-            chunkMelView.withUnsafeMutablePointer { ptr, _, _ in
-                for m in 0..<Self.nMels {
-                    for t in 0..<consumeFrames {
-                        ptr[m * framesPerChunk + t] = mel[m * totalFrames + (chunkStart + t)]
-                    }
-                    // Pad remaining columns with zeros.
-                    for t in consumeFrames..<framesPerChunk {
-                        ptr[m * framesPerChunk + t] = 0
-                    }
+        while chunkStart < audio.count {
+            let chunkEnd = min(chunkStart + chunkSamples, audio.count)
+            let realSamples = chunkEnd - chunkStart
+
+            // Write this chunk's samples into the NDArray; zero-pad the tail
+            // if we're at end-of-audio with < chunkSamples remaining.
+            var av = audioND.mutableView(as: Float.self)
+            av.withUnsafeMutablePointer { ptr, _, _ in
+                for i in 0..<realSamples {
+                    ptr[i] = audio[chunkStart + i]
+                }
+                for i in realSamples..<chunkSamples {
+                    ptr[i] = 0
                 }
             }
 
+            let mel = try await preprocess.extract(audio: audioND, length: lengthND)
+
             var melLength = NDArray(shape: [1], scalarType: .int32)
-            melLength.setInt32(at: 0, to: Int32(consumeFrames))
-            let encOut = try await encoder.forward(mel: chunkMel, melLength: melLength)
+            melLength.setInt32(at: 0, to: Int32(framesPerChunk))
+            let encOut = try await encoder.forward(mel: mel, melLength: melLength)
             let newTokens = try await decoder.decode(encoderOutput: encOut)
             allEmittedTokens.append(contentsOf: newTokens)
 
