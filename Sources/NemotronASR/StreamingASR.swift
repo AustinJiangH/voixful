@@ -390,9 +390,9 @@ public actor StreamingASR {
         // truncation with a shorter final chunk), match it here.
         let framesPerChunk = chunkSize.totalFrames
         if melBufferFrames > 0 && melBufferFrames < framesPerChunk {
-            let paddingFrames = framesPerChunk - melBufferFrames
             // Zero-pad the mel buffer in row-major order: each row m gets
-            // `paddingFrames` zeros appended after its existing T frames.
+            // (framesPerChunk - melBufferFrames) zeros appended after its
+            // existing T frames.
             // Easiest to do by rebuilding the buffer with the new column count.
             var padded = [Float](repeating: 0, count: Self.nMels * framesPerChunk)
             for m in 0..<Self.nMels {

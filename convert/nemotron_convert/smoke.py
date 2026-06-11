@@ -178,7 +178,9 @@ def check_extract_signature() -> None:
 def check_models_wrappers() -> None:
     """Each of the three wrapper classes (encoder, prediction, joiner) can be
     instantiated against a `MagicMock()` NeMo submodule, and the encoder's
-    four cache buffers exist with the documented shapes per PLAN.md §2.
+    three cache buffers exist with the documented shapes (verified against the
+    English-only checkpoint 2026-06-11; the PLAN's "four caches" was extrapolation
+    from the soniqo Core ML port for the multilingual model).
     """
 
     from nemotron_convert.models import (
@@ -195,11 +197,8 @@ def check_models_wrappers() -> None:
     prediction = NemotronPredictionForCoreAI(inner_prediction)
     joiner = NemotronJoinerForCoreAI(inner_joiner)
 
-    # Encoder must have the four documented cache buffers (PLAN.md §2).
-    # We can't inspect tensor shapes without real torch, but we CAN confirm
-    # the attributes were created via register_buffer.
+    # Encoder must have the three documented cache buffers.
     for cache_name in (
-        "pre_cache",
         "cache_last_channel",
         "cache_last_time",
         "cache_last_channel_len",

@@ -118,7 +118,9 @@ step "3/7  Downloading model weights (or using cache)"
 # NeMo from_pretrained caches under HF_HOME / ~/.cache/huggingface/hub. We
 # trigger a download by calling from_pretrained on a tiny stub script; subsequent
 # runs hit cache and finish in <1 s.
-MODEL_ID="${MODEL_ID:-nvidia/nemotron-3.5-asr-streaming-0.6b}"
+# English-only sibling matches convert.py's DEFAULT_MODEL_ID. The 40-language
+# checkpoint needs an unreleased NeMo class — see convert/nemotron_convert/convert.py.
+MODEL_ID="${MODEL_ID:-nvidia/nemotron-speech-streaming-en-0.6b}"
 DOWNLOAD_MARK="$ROOT/fixtures/.model-downloaded"
 
 if [ "$FORCE_DOWNLOAD" -eq 1 ] || [ ! -f "$DOWNLOAD_MARK" ]; then
