@@ -164,12 +164,25 @@ public actor StreamingASR {
         // PLAN.md §6 uses `try await AIModel(contentsOf:)` so we mirror that.
         // If the SDK turns out to be sync, remove the `await` here AND in
         // any error path that bridges to ASRError.modelLoadFailed.
+        // Use AIModelCache with .persistent policy so the device-specific
+        // specialization (the cold-start cost — measured at ~970ms on first
+        // call, ~200ms warm) is reused across process launches. First launch
+        // after install: ~1s. Every subsequent launch: ~200ms.
         let model: AIModel
         do {
-            model = try await AIModel(contentsOf: modelURL)
+            if let cached = try AIModelCache.default.model(for: modelURL, options: .default) {
+                model = cached
+            } else {
+                model = try await AIModel.specialize(
+                    contentsOf: modelURL,
+                    options: .default,
+                    cache: AIModelCache.default,
+                    cachePolicy: .persistent
+                )
+            }
         } catch {
             throw ASRError.modelLoadFailed(
-                "AIModel(contentsOf: \(modelURL.path)) failed: \(error)"
+                "AIModel.specialize(contentsOf: \(modelURL.path)) failed: \(error)"
             )
         }
 
@@ -402,50 +415,127 @@ public actor StreamingASR {
     /// on the whole audio buffer, then driving the encoder/decoder in
     /// 128-frame chunks. Use this for `nemotron-asr file` where the audio
     /// length is known up front; for live mic use `feed(...)` + `finish()`.
+    /// Per-stage wall-clock counters (ms). Populated by `transcribe(audio:)`
+    /// every call. Reset on `start()`. Read by callers to print breakdowns.
+    public struct PerfCounters: Sendable {
+        public var preprocessMs: Double = 0
+        public var encodeMs: Double = 0
+        public var decodeMs: Double = 0
+        public var copyMs: Double = 0
+        public var chunkCount: Int = 0
+        public var audioMs: Double = 0
+    }
+    public private(set) var lastPerf = PerfCounters()
+
     public func transcribe(audio: [Float]) async throws -> Transcript {
         await self.start()
+        var perf = PerfCounters()
+        perf.audioMs = Double(audio.count) / 16.0  // ms (16 kHz)
 
-        // Process audio in fixed 20480-sample (1.28 s @ 16 kHz) chunks. Each
-        // chunk goes through preprocess (audio → [1, 128, 128] mel) on the ANE,
-        // then encoder → decoder. The streaming caches in EncoderSession +
-        // PredictionSession carry context across chunks, so we get the same
-        // RNN-T behaviour as a single big batch on a streaming model.
-        let chunkSamples = PreprocessSession.audioSamples  // 20480
-        let framesPerChunk = Self.encoderFramesPerChunk     // 128
+        let chunkSamples = PreprocessSession.audioSamples
+        let framesPerChunk = Self.encoderFramesPerChunk
 
-        var chunkStart = 0
-        // Reuse a single audio NDArray across all chunks. Allocate once.
+        // Pipeline: while the decoder is chewing chunk N's encoder output on
+        // the CPU + a stream of small ANE calls, we kick off chunk N+1's
+        // preprocess + encoder on the ANE. The encoder is cache-aware so its
+        // calls MUST be serial (each one reads the previous one's cache
+        // state); we exploit that by running encoder N+1 immediately after
+        // encoder N's await returns (state is committed), in a fresh Task.
+        //
+        // Wins: the decode's ~12 ms/chunk overlaps with the next chunk's
+        // ~32 ms/chunk preprocess+encode. The savings depend on whether the
+        // ANE serializes encoder+joiner calls at the hardware level (it
+        // likely does in practice), so we measure rather than promise.
+
+        // Pre-allocate input buffers once. NDArrays carry their own backing
+        // store so we reuse them across chunks via mutableView() writes.
         var audioND = NDArray(shape: [1, chunkSamples], scalarType: .float32)
         var lengthND = NDArray(shape: [1], scalarType: .int32)
         lengthND.setInt32(at: 0, to: Int32(chunkSamples))
+        var melLength = NDArray(shape: [1], scalarType: .int32)
+        melLength.setInt32(at: 0, to: Int32(framesPerChunk))
 
-        while chunkStart < audio.count {
-            let chunkEnd = min(chunkStart + chunkSamples, audio.count)
-            let realSamples = chunkEnd - chunkStart
-
-            // Write this chunk's samples into the NDArray; zero-pad the tail
-            // if we're at end-of-audio with < chunkSamples remaining.
+        // Helper to do copy + preprocess + encode and return the encoder output.
+        // Captures `audioND` etc. by-value via implicit copy.
+        func runUpToEncoder(chunkStart: Int, realSamples: Int) async throws -> (NDArray, Double, Double, Double) {
+            // 1. Sample copy (CPU).
+            let cpyStart = Date()
             var av = audioND.mutableView(as: Float.self)
             av.withUnsafeMutablePointer { ptr, _, _ in
-                for i in 0..<realSamples {
-                    ptr[i] = audio[chunkStart + i]
+                audio.withUnsafeBufferPointer { src in
+                    ptr.update(from: src.baseAddress!.advanced(by: chunkStart), count: realSamples)
                 }
-                for i in realSamples..<chunkSamples {
-                    ptr[i] = 0
+                if realSamples < chunkSamples {
+                    ptr.advanced(by: realSamples).update(repeating: 0, count: chunkSamples - realSamples)
                 }
             }
+            let cpyMs = Date().timeIntervalSince(cpyStart) * 1000
 
+            // 2. Preprocess (ANE).
+            let preStart = Date()
             let mel = try await preprocess.extract(audio: audioND, length: lengthND)
+            let preMs = Date().timeIntervalSince(preStart) * 1000
 
-            var melLength = NDArray(shape: [1], scalarType: .int32)
-            melLength.setInt32(at: 0, to: Int32(framesPerChunk))
+            // 3. Encoder (ANE).
+            let encStart = Date()
             let encOut = try await encoder.forward(mel: mel, melLength: melLength)
-            let newTokens = try await decoder.decode(encoderOutput: encOut)
-            allEmittedTokens.append(contentsOf: newTokens)
+            let encMs = Date().timeIntervalSince(encStart) * 1000
 
-            chunkStart = chunkEnd
+            return (encOut, cpyMs, preMs, encMs)
         }
 
+        // Walk the audio in chunks. Maintain a "next chunk's encoder output"
+        // task that runs concurrently with the current chunk's decoder.
+        let totalChunks = (audio.count + chunkSamples - 1) / chunkSamples
+        var currentEncOut: NDArray
+        var currentTimings: (cpy: Double, pre: Double, enc: Double)
+        do {
+            // Chunk 0 runs synchronously to seed the pipeline.
+            let chunkEnd = min(chunkSamples, audio.count)
+            let realSamples = chunkEnd - 0
+            let (encOut, cpyMs, preMs, encMs) = try await runUpToEncoder(
+                chunkStart: 0, realSamples: realSamples
+            )
+            currentEncOut = encOut
+            currentTimings = (cpyMs, preMs, encMs)
+        }
+
+        for chunkIdx in 0..<totalChunks {
+            // Kick off chunk N+1's preprocess+encoder as a Task so it runs
+            // concurrently with chunk N's decoder. Captured `audioND` is a
+            // single shared buffer — the encoder doesn't retain it past its
+            // own call, so it's safe to mutate after `runUpToEncoder` returns.
+            let nextStart = (chunkIdx + 1) * chunkSamples
+            let nextTask: Task<(NDArray, Double, Double, Double), Error>? = nextStart < audio.count
+                ? Task {
+                    let nextEnd = min(nextStart + chunkSamples, audio.count)
+                    return try await runUpToEncoder(
+                        chunkStart: nextStart, realSamples: nextEnd - nextStart
+                    )
+                }
+                : nil
+
+            // 4. Decoder for chunk N (Swift loop + many ANE joiner/predict calls).
+            let decStart = Date()
+            let newTokens = try await decoder.decode(encoderOutput: currentEncOut)
+            perf.decodeMs += Date().timeIntervalSince(decStart) * 1000
+
+            perf.copyMs += currentTimings.cpy
+            perf.preprocessMs += currentTimings.pre
+            perf.encodeMs += currentTimings.enc
+
+            allEmittedTokens.append(contentsOf: newTokens)
+            perf.chunkCount += 1
+
+            // Wait for next chunk's encoder output.
+            if let nextTask = nextTask {
+                let (nextEncOut, cpyMs, preMs, encMs) = try await nextTask.value
+                currentEncOut = nextEncOut
+                currentTimings = (cpyMs, preMs, encMs)
+            }
+        }
+
+        lastPerf = perf
         let fullText = await tokenizer.decode(tokens: allEmittedTokens, stripLangTags: true)
         let segment = Transcript.Segment(
             text: fullText,

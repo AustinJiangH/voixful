@@ -231,6 +231,9 @@ struct FileCommand: AsyncParsableCommand {
     @Flag(help: "Strip language tags from output")
     var stripLangTags: Bool = false
 
+    @Flag(help: "Print per-stage timing breakdown after transcription")
+    var timing: Bool = false
+
     func run() async throws {
         let chunkSize = try parseChunkSize(chunk)
         let lang = try parseLanguage(language)
@@ -258,16 +261,30 @@ struct FileCommand: AsyncParsableCommand {
             throw ExitCode.failure
         }
 
-        // One-shot transcription: uses the non-streaming mel path (preemph
-        // + reflect-pad applied to the whole buffer) for exact NeMo parity.
-        // The streaming `feed(...)` path is for live mic where audio length
-        // is unknown; this is a file with known length.
+        let wallStart = Date()
         let transcript: Transcript
         do {
             transcript = try await asr.transcribe(audio: samples)
         } catch {
             writeStderr("error: transcribe(audio:) failed: \(error)")
             throw ExitCode.failure
+        }
+        let totalMs = Date().timeIntervalSince(wallStart) * 1000
+
+        if timing {
+            let perf = await asr.lastPerf
+            let n = perf.chunkCount
+            FileHandle.standardError.write("\n=== Perf breakdown ===\n".data(using: .utf8)!)
+            let lines = [
+                String(format: "  audio in:           %7.1f ms (%.2fs)", perf.audioMs, perf.audioMs/1000),
+                String(format: "  copy → NDArray:     %7.1f ms total  %5.2f ms/chunk  (CPU)", perf.copyMs, perf.copyMs/Double(n)),
+                String(format: "  preprocess_audio:   %7.1f ms total  %5.2f ms/chunk  (ANE)", perf.preprocessMs, perf.preprocessMs/Double(n)),
+                String(format: "  encode:             %7.1f ms total  %5.2f ms/chunk  (ANE)", perf.encodeMs, perf.encodeMs/Double(n)),
+                String(format: "  decode (incl ANE):  %7.1f ms total  %5.2f ms/chunk  (Swift + ANE)", perf.decodeMs, perf.decodeMs/Double(n)),
+                String(format: "  TOTAL:              %7.1f ms  RTF=%.3f", totalMs, totalMs/perf.audioMs),
+                String(format: "  Chunks:             %d", n),
+            ].joined(separator: "\n") + "\n"
+            FileHandle.standardError.write(lines.data(using: .utf8)!)
         }
 
         // PLAN.md §7 Phase 6 WER gate measures `transcript.text` against the
