@@ -24,6 +24,18 @@ def extract_modules_from_nemo(model_id: str) -> dict[str, Any]:
 
     model = nemo_asr.models.ASRModel.from_pretrained(model_id)
 
+    # Enable cache support BEFORE pulling out the encoder. This is the toggle that
+    # makes forward_for_export accept and return the streaming caches. Without it,
+    # the exported graph would silently drop streaming state (the NeMo
+    # "set_export_config" pattern from PLAN.md §3 Step 1 — verified 2026-06-11
+    # against the english-only sibling).
+    model.set_export_config({"cache_support": "True"})
+
+    # Disable the joint's fuse_loss_wer path so `joint(f, g)` returns logits
+    # directly rather than requiring transcript+length kwargs (a training-time
+    # convenience that gets in the way of inference export).
+    model.joint._fuse_loss_wer = False
+
     # VERIFY: NeMo attribute names — PLAN.md §3 Step 1 uses .encoder / .decoder / .joint
     # / .preprocessor / .cfg / .tokenizer. Confirm against the actual loaded class in
     # Phase 1; some NeMo model classes expose `prediction_network` or `joint_net` aliases.

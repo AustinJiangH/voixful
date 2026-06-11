@@ -304,7 +304,12 @@ public actor StreamingASR {
 
             // Drive one encoder call. The encoder updates its four cache
             // tensors in place via MutableViews.
-            let encOut = try await encoder.forward(mel: chunkMel, langId: langOneHot)
+            // Pass mel_length matching the chunk's frame count. The English-only
+            // checkpoint takes (mel_chunk, mel_length); the multilingual variant
+            // would also take a `lang_id` here.
+            var melLength = NDArray(shape: [1], scalarType: .int32)
+            melLength.setInt32(at: 0, to: Int32(framesPerChunk))
+            let encOut = try await encoder.forward(mel: chunkMel, melLength: melLength)
 
             // Drive the greedy decoder over the encoder output's time axis.
             // Returns just the tokens emitted by THIS decode call.
@@ -405,7 +410,12 @@ public actor StreamingASR {
         // exactly 0, we skip — no audio left to process.
         if melBufferFrames >= framesPerChunk {
             let chunkMel = sliceMelChunk(frames: framesPerChunk)
-            let encOut = try await encoder.forward(mel: chunkMel, langId: langOneHot)
+            // Pass mel_length matching the chunk's frame count. The English-only
+            // checkpoint takes (mel_chunk, mel_length); the multilingual variant
+            // would also take a `lang_id` here.
+            var melLength = NDArray(shape: [1], scalarType: .int32)
+            melLength.setInt32(at: 0, to: Int32(framesPerChunk))
+            let encOut = try await encoder.forward(mel: chunkMel, melLength: melLength)
             let newTokens = try await decoder.decode(encoderOutput: encOut)
             allEmittedTokens.append(contentsOf: newTokens)
         }

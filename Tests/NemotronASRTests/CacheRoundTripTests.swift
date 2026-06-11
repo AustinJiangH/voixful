@@ -178,21 +178,20 @@ final class CacheRoundTripTests: XCTestCase {
         // properties from outside the actor.
         await encoder._test_setAllCachesToSentinel(0.42)
 
-        // Step 2: verify the sentinel actually landed.
-        let pre = await encoder._test_preCacheFlat()
-        XCTAssertFalse(pre.allSatisfy { $0 == 0.0 },
-                       "sentinel write failed — preCache is still all-zero")
+        // Step 2: verify the sentinel actually landed (any of the float caches).
+        let lc = await encoder._test_cacheLastChannelFlat()
+        XCTAssertFalse(lc.allSatisfy { $0 == 0.0 },
+                       "sentinel write failed — cacheLastChannel is still all-zero")
 
-        // Step 3: reset, verify all four caches are zero.
+        // Step 3: reset, verify all three caches are zero (no pre_cache in the
+        // English-only checkpoint — see EncoderSession.swift header).
         await encoder.reset()
 
-        let preZ = await encoder._test_preCacheFlat()
         let lcZ = await encoder._test_cacheLastChannelFlat()
         let ltZ = await encoder._test_cacheLastTimeFlat()
         let lenZ = await encoder._test_cacheLastChannelLenFlat()
 
-        for (name, buf) in [("preCache", preZ),
-                            ("cacheLastChannel", lcZ),
+        for (name, buf) in [("cacheLastChannel", lcZ),
                             ("cacheLastTime", ltZ)] {
             for (i, v) in buf.enumerated() {
                 XCTAssertEqual(v, 0.0,
@@ -251,15 +250,11 @@ extension EncoderSession {
     /// Float input (so a sentinel of 0.42 lands as 0 — we use a separate
     /// path for it).
     func _test_setAllCachesToSentinel(_ value: Float) {
-        preCache.fillFloat32(value)
         cacheLastChannel.fillFloat32(value)
         cacheLastTime.fillFloat32(value)
-        // int32 cache: write a non-zero integer directly.
-        cacheLastChannelLen.fillInt32(7)
+        // int64 cache: write a non-zero integer directly.
+        cacheLastChannelLen.fillInt64(7)
     }
-
-    /// Snapshot `preCache` as a flat `[Float]` for assertions.
-    func _test_preCacheFlat() -> [Float] { preCache.flatFloat32() }
 
     /// Snapshot `cacheLastChannel` as a flat `[Float]` for assertions.
     func _test_cacheLastChannelFlat() -> [Float] { cacheLastChannel.flatFloat32() }
@@ -268,6 +263,6 @@ extension EncoderSession {
     func _test_cacheLastTimeFlat() -> [Float] { cacheLastTime.flatFloat32() }
 
     /// Snapshot `cacheLastChannelLen` as a flat `[Int32]` for assertions.
-    func _test_cacheLastChannelLenFlat() -> [Int32] { cacheLastChannelLen.flatInt32() }
+    func _test_cacheLastChannelLenFlat() -> [Int64] { cacheLastChannelLen.flatInt64() }
 }
 #endif

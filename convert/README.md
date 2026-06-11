@@ -7,20 +7,28 @@ for the open questions that the `VERIFY` comments throughout this package track.
 
 ## Install
 
+**Recommended (verified 2026-06-11):** use `uv` + Python 3.12. `uv` handles the
+pre-release pin (`coreai-torch` depends on `coreai-core==1.0.0b1`, which plain
+`pip install` skips by default).
+
 ```sh
-python -m venv .venv
+uv venv -p 3.12 .venv
 source .venv/bin/activate
-pip install -e .
+uv pip install -e .
 ```
 
-**PyTorch version conflict (PLAN.md §10 open question 1).** NeMo 26.06 pins a
-specific PyTorch release, while `coreai_torch` requires the `torch.export` API
-introduced in PyTorch 2.5+. If `pip install -e .` fails to resolve a single PyTorch
-version that satisfies both, fall back to a two-environment workaround: load the
-checkpoint in a NeMo-compatible env (env A), serialize the encoder / prediction /
-joiner state dicts plus the model config to disk, then reload the modules in a
-PyTorch-2.5+/coreai_torch env (env B) and run `torch.export` + conversion there.
-Phase 1 of the plan resolves which environment shape is required.
+**Alternative (pip):** plain pip works with `--pre`:
+
+```sh
+python3.12 -m venv .venv
+source .venv/bin/activate
+pip install --pre -e .
+```
+
+Resolves the PLAN.md §10 open question 1: NeMo 26.06 and `coreai-torch` 0.4.0
+both run cleanly on the same PyTorch 2.11.0 / Python 3.12 install — no two-env
+workaround required. Python 3.13/3.14 wheels for several NeMo deps are spotty
+as of 2026-06; stick to 3.12.
 
 ## Auth
 

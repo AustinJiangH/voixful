@@ -48,6 +48,16 @@ extension NDArray {
         }
     }
 
+    /// Zero every Int64 element, in place. The real model's
+    /// `cache_last_channel_len` is int64 (verified against NeMo's encoder).
+    mutating func zeroInt64() {
+        let count = self.elementCount
+        var mv = self.mutableView(as: Int64.self)
+        mv.withUnsafeMutablePointer { ptr, _, _ in
+            ptr.update(repeating: 0, count: count)
+        }
+    }
+
     /// Write a single Float32 scalar at flat index `index`. Caller is
     /// responsible for ensuring the index is in bounds; this is a hot-path
     /// helper used by `LangID.oneHot` to set a single 1.0 slot.
@@ -77,6 +87,25 @@ extension NDArray {
         mv.withUnsafeMutablePointer { ptr, _, _ in
             ptr.update(repeating: value, count: count)
         }
+    }
+
+    /// Fill every Int64 element with `value`, in place.
+    mutating func fillInt64(_ value: Int64) {
+        let count = self.elementCount
+        var mv = self.mutableView(as: Int64.self)
+        mv.withUnsafeMutablePointer { ptr, _, _ in
+            ptr.update(repeating: value, count: count)
+        }
+    }
+
+    /// Snapshot an Int64 NDArray as a flat `[Int64]`.
+    func flatInt64() -> [Int64] {
+        let count = self.elementCount
+        var out = [Int64](repeating: 0, count: count)
+        self.view(as: Int64.self).withUnsafePointer { ptr, _, _ in
+            for i in 0..<count { out[i] = ptr[i] }
+        }
+        return out
     }
 
     /// Fill every Int32 element with `value`, in place. Used by tests for the

@@ -26,36 +26,31 @@ def export_encoder(
     PLAN.md §3 Step 3 and Phase 2 final task.
     """
 
-    mel_T = torch.export.Dim("mel_T", min=1, max=max_chunk_frames)
-
-    # Example inputs. Shapes per PLAN.md §2:
-    # - mel_chunk: [batch=1, mel_bins=128, T]
-    # - lang_id: 128-dim one-hot language ID (PLAN.md §2 "language-prompt fusion")
-    # VERIFY: lang_id encoding — confirm whether NeMo wants the one-hot vector, an
-    # integer index, or a string; PLAN.md §6 has it as a 128-dim one-hot but the
-    # exact dtype/shape is not nailed down. Inspect the language-prompt fusion code
-    # path in Phase 1/2.
-    example_mel = torch.zeros(1, 128, max_chunk_frames, dtype=torch.float32)
-    example_lang = torch.zeros(1, 128, dtype=torch.float32)
+    # Fixed-shape export: T=128 (the smallest multiple of 8 ≥ 121, the streaming-cfg
+    # minimum). Dynamic-shape export hits a coreai_torch 0.4.0 lowering bug on
+    # `aten.repeat` whose count is a symbolic int rather than a Python int — the
+    # framework's `replace_repeat` decomposition assumes a literal. Until that's
+    # fixed upstream, ship one fixed-shape `.aimodel` per chunk size that matters.
+    # The 128-frame chunk corresponds to the larger (1120 ms-ish) streaming
+    # variant; smaller chunks would re-export with `example_T=8*k` for k∈{15..16}.
+    example_T = 128
+    example_mel = torch.zeros(1, 128, example_T, dtype=torch.float32)
+    example_length = torch.tensor([example_T], dtype=torch.int32)
 
     exported = torch.export.export(
         wrapper,
-        args=(example_mel, example_lang),
-        dynamic_shapes={"mel_chunk": {2: mel_T}, "lang_id": None},
+        args=(example_mel, example_length),
     )
     return exported.run_decompositions(coreai_torch.get_decomp_table())
 
 
 def export_prediction(wrapper: NemotronPredictionForCoreAI) -> ExportedProgram:
-    """Export the prediction wrapper. The previous token is a scalar int32; the LSTM
-    state is carried via `register_buffer` (see `models.py`).
+    """Export the prediction wrapper. `decoder.predict` accepts a [B, U=1] int32
+    token tensor; the LSTM state is carried via `register_buffer`.
     """
 
-    # Single previous token, batch=1. int32 matches the cache_last_channel_len dtype
-    # convention used elsewhere in PLAN.md §2.
-    # VERIFY: prev_token shape — NeMo's RNNT prediction typically takes a [B] or [B,1]
-    # integer tensor. Confirm in Phase 2 against the actual decoder API.
-    example_prev_token = torch.zeros(1, dtype=torch.int32)
+    # Single previous token shaped [B=1, U=1] int32.
+    example_prev_token = torch.zeros(1, 1, dtype=torch.int32)
 
     exported = torch.export.export(
         wrapper,
@@ -69,14 +64,12 @@ def export_joiner(
     d_model: int = 1024,
     pred_hidden: int = 640,
 ) -> ExportedProgram:
-    """Export the joiner. Pure function: takes one encoder step and one prediction
-    embedding, returns vocab logits.
+    """Export the joiner. `joint(f, g)` takes channels-last tensors:
+    - enc_step: `[B=1, T=1, d_model=1024]`
+    - pred_emb: `[B=1, U=1, pred_hidden=640]`
+    Output: `[B, T=1, U=1, vocab=1025]` (vocab 1024 SP tokens + 1 blank).
     """
 
-    # VERIFY: encoder step shape — PLAN.md §2 implies enc_out is [B, T, d_model] from
-    # the encoder; a single time step is [B, d_model] or [B, 1, d_model]. Confirm in
-    # Phase 2 against NeMo's joint signature.
-    # VERIFY: pred_emb shape — NeMo's prediction typically emits [B, 1, pred_hidden].
     example_enc_step = torch.zeros(1, 1, d_model, dtype=torch.float32)
     example_pred_emb = torch.zeros(1, 1, pred_hidden, dtype=torch.float32)
 
