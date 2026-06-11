@@ -17,8 +17,68 @@
 
 import ArgumentParser
 import AVFoundation
+import Darwin
 import Foundation
 import NemotronASR
+
+// MARK: - Terminal-aware partial-display state
+
+/// Tracks the on-screen partial line so we can erase it cleanly before
+/// printing the next partial OR the finalized line, even if it wrapped
+/// across multiple terminal rows. ANSI: `\x1B[<n>F` moves cursor up N
+/// lines AND to column 0; `\x1B[2K` clears the entire current line.
+private final class PartialLine {
+    /// Number of terminal rows the last partial occupied (0 if no partial).
+    var rowsPrinted: Int = 0
+
+    /// Best-effort terminal width. Re-queried on every print so resizing works.
+    static var terminalCols: Int {
+        var ws = winsize()
+        if ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0, ws.ws_col > 0 {
+            return Int(ws.ws_col)
+        }
+        if let env = ProcessInfo.processInfo.environment["COLUMNS"],
+           let n = Int(env), n > 0 { return n }
+        return 80
+    }
+
+    /// Erase the current partial (whatever it last printed) from the terminal.
+    func erase() {
+        guard rowsPrinted > 0 else { return }
+        // Move cursor up to the first row of the partial, clear from there
+        // through the end of the screen.
+        // \x1B[<n>F = move up n rows + to column 0
+        // \x1B[J   = clear from cursor to end of display
+        var seq = ""
+        if rowsPrinted > 1 {
+            seq += "\u{1B}[\(rowsPrinted - 1)F"
+        } else {
+            seq += "\r"
+        }
+        seq += "\u{1B}[J"
+        FileHandle.standardOutput.write(seq.data(using: .utf8)!)
+        rowsPrinted = 0
+    }
+
+    /// Print a partial. Truncates from the LEFT so the user sees the most
+    /// recent words (which is what they're saying NOW). Single-line, never
+    /// wraps. Records that one row is now occupied so the next erase clears it.
+    func print(_ text: String) {
+        let cols = Self.terminalCols
+        let displayText: String
+        if text.count > cols - 2 {
+            // Show the tail of the text. Prefix with "…" to indicate truncation.
+            let tail = String(text.suffix(cols - 3))
+            displayText = "…" + tail
+        } else {
+            displayText = text
+        }
+        erase()
+        // No newline — caller does \r start for terminating finalize.
+        FileHandle.standardOutput.write("\u{1B}[2K\r\(displayText)".data(using: .utf8)!)
+        rowsPrinted = 1
+    }
+}
 
 // MARK: - Root
 
@@ -561,7 +621,8 @@ struct MicCommand: AsyncParsableCommand {
         var leftover: [Float] = []          // sub-VAD-window remainder
         var utterance: [Float] = []         // raw audio for the current utterance
         var lastPartialAt: TimeInterval = 0 // wall-clock of last partial
-        var lastPartialText = ""            // last printed partial (for in-place overwrites)
+        var lastPartialText = ""            // last printed partial text (for skip-if-same)
+        let partial = PartialLine()         // terminal-aware in-place updater
         let partialIntervalSec: TimeInterval = 1.0  // how often to update partials
 
         // Suppress the AVAudioEngine input-format warnings ("format does not
@@ -589,19 +650,16 @@ struct MicCommand: AsyncParsableCommand {
                 } else if hasSeenSpeech {
                     silenceWindowRun += 1
                     if silenceWindowRun >= silenceWindowsToFinish {
-                        // End-of-utterance: finalize. Erase the partial line
-                        // (\r + pad spaces + \r), then print the final on its
-                        // own line so it persists in scrollback.
+                        // End-of-utterance: erase the partial, print final on
+                        // its own line so it persists in scrollback.
                         do {
                             let transcript = try await asr.transcribe(audio: utterance)
                             let text = transcript.text.trimmingCharacters(in: .whitespaces)
-                            let pad = String(repeating: " ", count: max(0, lastPartialText.count + 2))
+                            partial.erase()
                             if !text.isEmpty {
-                                print("\r\(pad)\r\(text)")
-                            } else if !lastPartialText.isEmpty {
-                                print("\r\(pad)\r", terminator: "")
+                                print(text)
+                                fflush(stdout)
                             }
-                            fflush(stdout)
                         } catch {
                             writeStderr("error: transcribe failed: \(error)")
                         }
@@ -617,9 +675,8 @@ struct MicCommand: AsyncParsableCommand {
             leftover = Array(combined[w..<combined.count])
 
             // Partial update during active speech: every partialIntervalSec,
-            // run transcribe on what we've accumulated and overwrite the
-            // current terminal line. We skip until we have at least 1.2s of
-            // audio so the encoder's 128-frame minimum chunk is satisfied.
+            // run transcribe on what we've accumulated and update the
+            // partial line via PartialLine (terminal-aware, no wrap).
             let nowMono = CFAbsoluteTimeGetCurrent()
             if hasSeenSpeech
                 && silenceWindowRun == 0
@@ -630,9 +687,8 @@ struct MicCommand: AsyncParsableCommand {
                 do {
                     let transcript = try await asr.transcribe(audio: utterance)
                     let text = transcript.text.trimmingCharacters(in: .whitespaces)
-                    if text != lastPartialText {
-                        let pad = String(repeating: " ", count: max(0, lastPartialText.count - text.count))
-                        print("\r\(text)\(pad)", terminator: "")
+                    if text != lastPartialText && !text.isEmpty {
+                        partial.print(text)
                         fflush(stdout)
                         lastPartialText = text
                     }
@@ -651,6 +707,7 @@ struct MicCommand: AsyncParsableCommand {
             do {
                 let transcript = try await asr.transcribe(audio: utterance)
                 let text = transcript.text.trimmingCharacters(in: .whitespaces)
+                partial.erase()
                 if !text.isEmpty {
                     print(text); fflush(stdout)
                 }

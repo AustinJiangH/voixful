@@ -259,6 +259,22 @@ public actor StreamingASR {
         // Joiner is stateless; no reset() to call (intentionally — see
         // JoinerSession.swift).
 
+        // SOS warmup. Our exported predict_step was built with add_sos=False
+        // (NeMo's predict signature). Without an explicit SOS step the
+        // prediction LSTM starts at zeros and the first joiner call sees
+        // pred_emb=zeros, biasing toward blank — which loses the first
+        // ~0.5s of speech in every utterance. NeMo's reference inference
+        // achieves SOS-conditioning via predict(add_sos=True); we simulate
+        // it by feeding the blank id once. In blank-as-SOS RNN-T
+        // predictors (which this checkpoint is), processing blank from a
+        // fresh state produces exactly the SOS embedding.
+        do {
+            try await prediction.step(token: GreedyRNNTDecoder.blankId)
+        } catch {
+            // If the SOS warmup fails, transcription degrades to "first
+            // word(s) lost" — annoying but not crashing.
+        }
+
         // Drop any partially-consumed audio / mel / token state from the
         // prior utterance.
         audioBuffer.removeAll(keepingCapacity: true)
@@ -434,6 +450,20 @@ public actor StreamingASR {
 
         let chunkSamples = PreprocessSession.audioSamples
         let framesPerChunk = Self.encoderFramesPerChunk
+
+        // Prepend silence chunks so the encoder's cache-aware K/V state
+        // warms up before real speech hits. The cache window is 70 frames
+        // (~0.7 s); each warmup chunk contributes ~14 frames. Without
+        // warmup, the encoder produces "cold-cache" embeddings for the
+        // first ~3 output frames (~0.3 s), the joiner emits blank for
+        // those, and the first word(s) of the utterance get lost — even
+        // with SOS predictor warmup. The extra chunks cost ~50 ms of
+        // wall-clock each; 2 chunks is a good balance (recovers "The
+        // Quick" on the bundled sample without bloating cold-start).
+        let warmupChunks = 1
+        var workingAudio = [Float](repeating: 0, count: warmupChunks * chunkSamples)
+        workingAudio.append(contentsOf: audio)
+        let audio = workingAudio  // shadow the parameter
 
         // Pipeline: while the decoder is chewing chunk N's encoder output on
         // the CPU + a stream of small ANE calls, we kick off chunk N+1's
