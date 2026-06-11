@@ -195,6 +195,8 @@ fi
 # --- done -------------------------------------------------------------------
 
 printf '\n\033[1;32m✓ run-all complete.\033[0m  Next:\n'
-printf '   • Mic demo:        \033[1mswift run nemotron-asr mic --model %s\033[0m\n' "$AIMODEL_OUT"
-printf '   • SwiftUI demo:    \033[1m(cd Demos/NemotronDemo && swift run NemotronDemo)\033[0m\n'
+printf '   • \033[1mLIVE MIC DEMO:\033[0m  \033[1m./scripts/demo.sh\033[0m  ← speak, see transcript\n'
+printf '   • Sample file:     \033[1m./scripts/demo.sh sample\033[0m\n'
+printf '   • Any WAV:         \033[1m./scripts/demo.sh file path/to/audio.wav\033[0m\n'
+printf '   • SwiftUI demo:    \033[1m(cd Demos/NemotronDemo && swift run NemotronDemo)\033[0m  (Phase 2 — see HANDOFF.md)\n'
 printf '   • Re-run anytime:  \033[1m./scripts/run-all.sh\033[0m  (idempotent, uses caches)\n'
