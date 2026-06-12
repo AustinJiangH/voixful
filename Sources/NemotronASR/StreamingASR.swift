@@ -443,7 +443,7 @@ public actor StreamingASR {
     }
     public private(set) var lastPerf = PerfCounters()
 
-    public func transcribe(audio: [Float]) async throws -> Transcript {
+    public func transcribe(audio: [Float], warmup: Bool = true) async throws -> Transcript {
         await self.start()
         var perf = PerfCounters()
         perf.audioMs = Double(audio.count) / 16.0  // ms (16 kHz)
@@ -453,11 +453,11 @@ public actor StreamingASR {
         let inputSamples = PreprocessSession.audioSamples          // 20832
         let framesPerChunk = Self.encoderFramesPerChunk
 
-        // Prepend a chunk of silence to warm the encoder's cache. Combined
-        // with the stream-aware preprocessor (which uses real left context
-        // for non-first chunks), this restores the leading words that
-        // cold-cache alone was eating.
-        let warmupChunks = 1
+        // Prepend a chunk of silence to warm the encoder's cache. Costs ~30 ms
+        // (one extra chunk of preprocess + encoder + decoder); recovers the
+        // leading word that cold-cache eats. Set `warmup: false` to skip when
+        // first-word accuracy is less important than minimal latency.
+        let warmupChunks = warmup ? 1 : 0
         var workingAudio = [Float](repeating: 0, count: warmupChunks * chunkSamples)
         workingAudio.append(contentsOf: audio)
         let audio = workingAudio

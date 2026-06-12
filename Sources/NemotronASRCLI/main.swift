@@ -294,6 +294,9 @@ struct FileCommand: AsyncParsableCommand {
     @Flag(help: "Print per-stage timing breakdown after transcription")
     var timing: Bool = false
 
+    @Flag(help: "Skip the encoder cache warmup chunk (~30ms faster, may lose the leading word)")
+    var noWarmup: Bool = false
+
     func run() async throws {
         let chunkSize = try parseChunkSize(chunk)
         let lang = try parseLanguage(language)
@@ -324,7 +327,7 @@ struct FileCommand: AsyncParsableCommand {
         let wallStart = Date()
         let transcript: Transcript
         do {
-            transcript = try await asr.transcribe(audio: samples)
+            transcript = try await asr.transcribe(audio: samples, warmup: !noWarmup)
         } catch {
             writeStderr("error: transcribe(audio:) failed: \(error)")
             throw ExitCode.failure
