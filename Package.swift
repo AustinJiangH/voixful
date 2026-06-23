@@ -13,6 +13,8 @@ let package = Package(
     products: [
         // Brand core — the model-agnostic public contract.
         .library(name: "VoixfulSpeech", targets: ["VoixfulSpeech"]),
+        // Model-agnostic live terminal UI (mic session) — shared by every backend's CLI.
+        .library(name: "VoixfulTUI", targets: ["VoixfulTUI"]),
         // Nemotron backend — one model behind the brand surface.
         .library(name: "VoixfulNemotron", targets: ["VoixfulNemotron"]),
         // Brand CLI: `voixful transcribe …`.
@@ -32,6 +34,12 @@ let package = Package(
             dependencies: []
         ),
 
+        // MARK: Model-agnostic live terminal UI (depends only on core)
+        .target(
+            name: "VoixfulTUI",
+            dependencies: ["VoixfulSpeech"]
+        ),
+
         // MARK: Nemotron backend (depends on core + the engine)
         .target(
             name: "VoixfulNemotron",
@@ -43,6 +51,7 @@ let package = Package(
             name: "VoixfulCLI",
             dependencies: [
                 "VoixfulSpeech",
+                "VoixfulTUI",
                 "VoixfulNemotron",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ],
