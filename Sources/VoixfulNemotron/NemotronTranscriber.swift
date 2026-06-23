@@ -11,15 +11,26 @@
 // exposed via `nonisolated let` so it reads synchronously, exactly like Apple's
 // `SpeechTranscriber`.
 //
-// Streaming strategy (A) per DESIGN_ANALYZER_API.md §5: accumulate audio,
-// emit throttled volatile results by re-transcribing the growing utterance,
-// and one authoritative final result on `finalize()`. The true per-buffer
-// streaming path is a fast-follow gated on mel parity.
+// Two processing modes (DESIGN_ANALYZER_API.md §5):
+//   .batch     — strategy (A): accumulate the whole utterance, transcribe it
+//                each update. Most accurate (full reflect-padded mel context),
+//                but per-update cost grows with utterance length. Best for
+//                finite files.
+//   .streaming — strategy (B): drive StreamingASR.feed()/finish() incrementally.
+//                Fixed cost per chunk, no re-transcription — stays fast for
+//                open-ended live capture. Uses the streaming mel path, which
+//                trades a little accuracy for constant-time updates.
 
 import Foundation
 import CoreMedia
 import VoixfulSpeech
 import NemotronASR
+
+/// How the Nemotron backend consumes audio. See type-level docs above.
+public enum ProcessingMode: Sendable, Equatable {
+    case batch
+    case streaming
+}
 
 public actor NemotronTranscriber: Transcribing {
 
@@ -41,15 +52,19 @@ public actor NemotronTranscriber: Transcribing {
     private let modelURL: URL
     private let language: Language
     private let chunkSize: ChunkSize
+    private let mode: ProcessingMode
     private let converter = AudioInputConverter()
 
     private var engine: StreamingASR?
-    private var utterance: [Float] = []
+    private var utterance: [Float] = []   // batch mode only
+    private var samplesSeen = 0           // both modes — drives the time range
     private var utteranceStart: Double?
-    private var lastVolatileCount = 0
+    private var lastVolatileCount = 0      // batch mode only
 
-    /// Minimum new audio (samples @ 16 kHz) between volatile re-transcriptions.
-    /// 8000 = 0.5 s; keeps the re-transcribe cost off the per-buffer hot path.
+    /// Minimum new audio (samples @ 16 kHz) between volatile re-transcriptions
+    /// in `.batch` mode. 8000 = 0.5 s; keeps the re-transcribe cost off the
+    /// per-buffer hot path. Unused in `.streaming` mode (feed() is already
+    /// chunk-paced).
     private static let volatileStrideSamples = 8_000
 
     // MARK: - Init
@@ -57,12 +72,15 @@ public actor NemotronTranscriber: Transcribing {
     /// Create a transcriber. Model loading is deferred to `prepare()` (driven by
     /// the analyzer) so this initializer stays synchronous like Apple's.
     ///
+    /// - Parameter mode: `.batch` (default, accurate, for files) or `.streaming`
+    ///   (fixed cost per chunk, for live capture).
     /// - Throws: `VoixfulError.unsupportedLocale` if `locale` is outside the
     ///   backend's `supportedLocales`, or `.engine` for an unsupported chunk size.
     public init(
         modelURL: URL,
         locale: Locale = Locale(identifier: "en-US"),
         chunkSizeMS: Int = 320,
+        mode: ProcessingMode = .batch,
         reportingOptions: ReportingOption = [],
         attributeOptions: ResultAttributeOption = []
     ) throws {
@@ -80,6 +98,7 @@ public actor NemotronTranscriber: Transcribing {
         self.language = language
         self.locale = locale
         self.chunkSize = chunkSize
+        self.mode = mode
         self.reportingOptions = reportingOptions
         self.attributeOptions = attributeOptions
 
@@ -93,11 +112,17 @@ public actor NemotronTranscriber: Transcribing {
     public func prepare() async throws {
         guard engine == nil else { return }
         do {
-            engine = try await StreamingASR(
+            let engine = try await StreamingASR(
                 modelURL: modelURL,
                 language: language,
                 chunkSize: chunkSize
             )
+            // Streaming mode feeds incrementally, so the engine must be reset +
+            // SOS-warmed up front. Batch mode lets transcribe() reset per call.
+            if mode == .streaming {
+                await engine.start()
+            }
+            self.engine = engine
         } catch {
             continuation.finish(throwing: VoixfulError.engine("model load failed: \(error)"))
             throw VoixfulError.engine("model load failed: \(error)")
@@ -109,15 +134,28 @@ public actor NemotronTranscriber: Transcribing {
         if utteranceStart == nil {
             utteranceStart = input.bufferStartTime?.seconds ?? 0
         }
-        utterance.append(contentsOf: samples)
+        samplesSeen += samples.count
+        guard let engine else { return }
 
-        // Volatile results are best-effort and throttled; failures are ignored
-        // (the authoritative result comes from finalize()).
-        guard reportingOptions.contains(.volatileResults), let engine else { return }
-        guard utterance.count - lastVolatileCount >= Self.volatileStrideSamples else { return }
-        lastVolatileCount = utterance.count
-        if let transcript = try? await engine.transcribe(audio: utterance) {
-            continuation.yield(makeResult(transcript, isFinal: false))
+        switch mode {
+        case .batch:
+            utterance.append(contentsOf: samples)
+            // Volatile results are best-effort and throttled; failures are
+            // ignored (the authoritative result comes from finalize()).
+            guard reportingOptions.contains(.volatileResults) else { return }
+            guard utterance.count - lastVolatileCount >= Self.volatileStrideSamples else { return }
+            lastVolatileCount = utterance.count
+            if let transcript = try? await engine.transcribe(audio: utterance) {
+                continuation.yield(makeResult(text: transcript.text, isFinal: false))
+            }
+
+        case .streaming:
+            // Fixed cost per chunk: feed advances engine state and returns any
+            // partials produced this call. We always feed (to advance state)
+            // but only emit when volatile reporting is requested.
+            let partials = try await engine.feed(samples)
+            guard reportingOptions.contains(.volatileResults), let last = partials.last else { return }
+            continuation.yield(makeResult(text: last.text, isFinal: false))
         }
     }
 
@@ -127,11 +165,15 @@ public actor NemotronTranscriber: Transcribing {
             return
         }
         do {
-            let transcript = try await engine.transcribe(audio: utterance)
-            continuation.yield(makeResult(transcript, isFinal: true))
+            let transcript: Transcript
+            switch mode {
+            case .batch:     transcript = try await engine.transcribe(audio: utterance)
+            case .streaming: transcript = try await engine.finish()
+            }
+            continuation.yield(makeResult(text: transcript.text, isFinal: true))
             continuation.finish()
         } catch {
-            let wrapped = VoixfulError.engine("transcribe failed: \(error)")
+            let wrapped = VoixfulError.engine("finalize failed: \(error)")
             continuation.finish(throwing: wrapped)
             throw wrapped
         }
@@ -143,11 +185,11 @@ public actor NemotronTranscriber: Transcribing {
 
     // MARK: - Result construction
 
-    private func makeResult(_ transcript: Transcript, isFinal: Bool) -> TranscriptionResult {
+    private func makeResult(text rawText: String, isFinal: Bool) -> TranscriptionResult {
         let start = utteranceStart ?? 0
-        let duration = Double(utterance.count) / 16_000.0
+        let duration = Double(samplesSeen) / 16_000.0
 
-        var text = AttributedString(transcript.text)
+        var text = AttributedString(rawText)
         if attributeOptions.contains(.audioTimeRange) {
             // Per-token timing is a Phase-F placeholder in StreamingASR; for now
             // the whole utterance carries one audioTimeRange run.

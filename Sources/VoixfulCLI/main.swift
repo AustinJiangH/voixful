@@ -47,6 +47,9 @@ struct Transcribe: AsyncParsableCommand {
     @Option(help: "Output format: text or json.")
     var format: String = "text"
 
+    @Flag(help: "Use the incremental streaming feed() path instead of batch transcribe.")
+    var streaming: Bool = false
+
     func run() async throws {
         // Build the brand surface — identical in shape to Apple's SpeechAnalyzer.
         let transcriber: NemotronTranscriber
@@ -55,6 +58,7 @@ struct Transcribe: AsyncParsableCommand {
                 modelURL: URL(fileURLWithPath: model),
                 locale: Locale(identifier: language),
                 chunkSizeMS: chunk,
+                mode: streaming ? .streaming : .batch,
                 reportingOptions: [],
                 attributeOptions: [.audioTimeRange]
             )
@@ -172,6 +176,7 @@ struct Mic: AsyncParsableCommand {
                 modelURL: URL(fileURLWithPath: model),
                 locale: Locale(identifier: language),
                 chunkSizeMS: chunk,
+                mode: .streaming,
                 reportingOptions: [.volatileResults],
                 attributeOptions: []
             )
