@@ -277,12 +277,19 @@ struct Mic: AsyncParsableCommand {
         }
 
         // Teardown: stop capture, close the input stream, finalize → final
-        // result, wait for the printer to flush it, then clear the status line.
+        // result, wait for the printer to flush it, then restore the terminal.
+        // Ctrl+C is a normal stop, not an error — swallow any shutdown error so
+        // it never surfaces as an "Error:" message, and ALWAYS reset the
+        // terminal (drop the scroll region) so the prompt isn't left broken.
         engine.stop()
         inputNode.removeTap(onBus: 0)
         inputBuilder.finish()
-        try await analyzer.finalizeAndFinishThroughEndOfInput()
-        try await printer.value
+        do {
+            try await analyzer.finalizeAndFinishThroughEndOfInput()
+            try await printer.value
+        } catch {
+            printer.cancel()
+        }
         await display.finish()
 
         if micBufferCount == 0 {
@@ -332,6 +339,14 @@ private enum Term {
         return 80
     }
 
+    /// Current terminal height (rows), best-effort.
+    static var rows: Int {
+        var ws = winsize()
+        if ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0, ws.ws_row > 0 { return Int(ws.ws_row) }
+        if let r = ProcessInfo.processInfo.environment["LINES"], let n = Int(r), n > 0 { return n }
+        return 24
+    }
+
     static let reset = "\u{1B}[0m"
     static let bold = "\u{1B}[1m"
     static let dim = "\u{1B}[2m"
@@ -349,93 +364,123 @@ private enum Term {
 
 // MARK: - Live mic display
 
-/// Owns the terminal during `voixful mic`: a one-time branded header, a
-/// scrollback of committed finals, and a single sticky bottom line that fuses
-/// the brand, a colored level meter, and the live partial. All writes funnel
-/// through this actor, so the meter and the partial never clobber each other.
+/// Owns the terminal during `voixful mic`. The transcription flows and wraps in
+/// the main scroll area (so the whole thing is visible / scrollable), while a
+/// fixed two-line footer is pinned at the bottom via a DEC scroll region:
+///   line 1: voixful brand + colored level meter + numeric peak
+///   line 2: input device · rate · channels   ·   Ctrl+C to stop
+/// All writes funnel through this actor, so the footer and the transcript never
+/// fight over the cursor. Falls back to plain line output when stdout is not a
+/// terminal or is too short for a pinned footer.
 private actor MicDisplay {
     private let tty: Bool
-    private var partial = ""
+    private var rows = 0
+    private var enabled = false          // pinned-footer mode active
+    private var device = ""
+    private var sr = 0
+    private var ch = 0
+    private var printed = ""             // transcript text already emitted
     private var peak: Float = 0
     private var hasBuffers = true
-    private var statusShown = false
+
+    private static let footerHeight = 2
 
     init(tty: Bool) { self.tty = tty }
 
     private func out(_ s: String) { FileHandle.standardOutput.write(Data(s.utf8)) }
 
     func header(device: String, sampleRate: Int, channels: Int) {
-        guard tty else { out("voixful · listening (Ctrl+C to stop)\n"); return }
-        let rule = Term.dim + String(repeating: "─", count: min(Term.cols - 2, 54)) + Term.reset
-        out("\n  \(Term.brand())  \(Term.dim)· on-device speech\(Term.reset)\n")
-        out("  \(rule)\n")
-        out("  \(Term.dim)mic\(Term.reset)   \(device) · \(sampleRate / 1000) kHz · \(channels)ch\n")
-        out("  \(Term.dim)stop\(Term.reset)  Ctrl+C\n")
-        out("  \(rule)\n\n")
-        render()
+        self.device = device
+        self.sr = sampleRate
+        self.ch = channels
+        rows = Term.rows
+        guard tty, rows >= 6 else {
+            out("voixful · listening — speak (Ctrl+C to stop)\n")
+            return
+        }
+        enabled = true
+        out("\u{1B}[2J\u{1B}[H")                              // clear screen, home
+        out("\u{1B}[1;\(rows - Self.footerHeight)r")          // scroll region above footer
+        out("\u{1B}[1;1H")                                    // cursor to top of region
+        out("\(Term.brand())  \(Term.dim)· on-device speech — speak\(Term.reset)\n\n")
+        printed = ""
+        drawFooter()
     }
 
     func setPartial(_ text: String) {
-        partial = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        render()
+        append(text.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
     func setLevel(_ p: Float, hasBuffers: Bool) {
         peak = p
         self.hasBuffers = hasBuffers
-        render()
+        if enabled { drawFooter() }
     }
 
     func commitFinal(_ text: String) {
         let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !t.isEmpty else { return }
-        eraseStatus()
-        out(tty ? "  \(Term.fg(78))▸\(Term.reset) \(t)\n" : "\(t)\n")
-        partial = ""
-        render()
+        if enabled {
+            append(t)
+            out("\n")            // seal the final line; next utterance starts fresh
+            printed = ""
+            drawFooter()
+        } else {
+            out(t + "\n")
+        }
     }
 
+    /// Reset the terminal: drop the scroll region and move below the footer so
+    /// the shell prompt lands cleanly. The transcript stays on screen.
     func finish() {
-        eraseStatus()
+        guard enabled else { return }
+        out("\u{1B}[r")                       // reset scroll region (full screen)
+        out("\u{1B}[\(rows);1H\n")            // below the footer
+        enabled = false
     }
 
-    private func eraseStatus() {
-        guard tty, statusShown else { return }
-        out("\u{1B}[2K\r")
-        statusShown = false
+    /// Append the cumulative transcript's new suffix into the scroll area. The
+    /// streaming text is append-only (greedy RNN-T commits tokens), so we print
+    /// only the delta; on the rare revision we start a fresh line.
+    private func append(_ text: String) {
+        guard enabled, !text.isEmpty else { return }
+        let delta: String
+        if text.hasPrefix(printed) {
+            delta = String(text.dropFirst(printed.count))
+        } else {
+            delta = "\n" + text
+        }
+        printed = text
+        guard !delta.isEmpty else { return }
+        out(delta)               // flows + wraps + scrolls within the region
+        drawFooter()             // a scroll may have occurred; keep footer fresh
     }
 
-    private func render() {
-        guard tty else { return }
-        eraseStatus()
+    private func drawFooter() {
+        guard enabled else { return }
+        out("\u{1B}7")                                                  // save cursor
+        out("\u{1B}[\(rows - 1);1H\u{1B}[2K\(footerStatus())")          // line 1
+        out("\u{1B}[\(rows);1H\u{1B}[2K\(footerInfo())")                // line 2
+        out("\u{1B}8")                                                  // restore cursor
+    }
 
-        // Colored level meter (green → amber → red).
-        let width = 14
+    private func footerStatus() -> String {
+        let width = 18
         let level = min(max(peak, 0), 1)
         let filled = Int((level * Float(width)).rounded())
         let color = peak > 0.6 ? 203 : (peak > 0.22 ? 215 : 78)
         let meter = Term.fg(color) + String(repeating: "▮", count: filled)
             + Term.dim + String(repeating: "·", count: width - filled) + Term.reset
         let peakStr = String(format: "%.2f", peak)
+        let warn = hasBuffers ? "" : "   \(Term.fg(203))no audio — check mic permission\(Term.reset)"
+        return " \(Term.brand())  \(Term.fg(240))▕\(Term.reset)\(meter)\(Term.fg(240))▏\(Term.reset)"
+            + " \(Term.dim)\(peakStr)\(Term.reset)\(warn)"
+    }
 
-        // Visible prefix: " voixful  ▕<14>▏ 0.00  "
-        let prefixVisible = 1 + 7 + 2 + 1 + width + 1 + 1 + peakStr.count + 2
-        let budget = max(8, Term.cols - prefixVisible - 1)
-
-        let bodyRaw: String
-        if !hasBuffers {
-            bodyRaw = "\(Term.fg(203))no audio — check mic permission\(Term.reset)"
-        } else if partial.isEmpty {
-            bodyRaw = "\(Term.dim)listening…\(Term.reset)"
-        } else {
-            var p = partial
-            if p.count > budget { p = "…" + String(p.suffix(budget - 1)) }
-            bodyRaw = "\(Term.italic)\(Term.dim)\(p)\(Term.reset)"
-        }
-
-        out(" \(Term.brand())  \(Term.fg(240))▕\(Term.reset)\(meter)\(Term.fg(240))▏\(Term.reset)"
-            + " \(Term.dim)\(peakStr)\(Term.reset)  \(bodyRaw)")
-        statusShown = true
+    private func footerInfo() -> String {
+        let dev = device.count > 34 ? String(device.prefix(33)) + "…" : device
+        return " \(Term.dim)mic\(Term.reset) \(dev) · \(sr / 1000) kHz · \(ch)ch"
+            + "   \(Term.fg(240))·\(Term.reset)   \(Term.dim)Ctrl+C to stop\(Term.reset)"
     }
 }
 
