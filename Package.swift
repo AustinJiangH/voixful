@@ -1,32 +1,54 @@
 // swift-tools-version: 6.0
-// Nemotron 3.5 ASR on Core AI — see PLAN.md §6 for the package layout this manifest realizes.
+// Voixful — SpeechAnalyzer-shaped on-device speech API over local models.
+// Monorepo: VoixfulSpeech (brand core) + per-model backends (VoixfulNemotron).
+// See DESIGN_ANALYZER_API.md for the topology this manifest realizes.
 
 import PackageDescription
 
 let package = Package(
-    name: "NemotronASR",
+    name: "Voixful",
     platforms: [
-        // Resolves the Phase A VERIFY: targets macOS 27 (Core AI's SDK floor).
-        // Verified against Swift 6.4 / SDK 27.0 on 2026-06-11.
         .macOS("27.0"),
     ],
     products: [
-        .library(
-            name: "NemotronASR",
-            targets: ["NemotronASR"]
-        ),
-        .executable(
-            name: "nemotron-asr",
-            targets: ["NemotronASRCLI"]
-        ),
+        // Brand core — the model-agnostic public contract.
+        .library(name: "VoixfulSpeech", targets: ["VoixfulSpeech"]),
+        // Nemotron backend — one model behind the brand surface.
+        .library(name: "VoixfulNemotron", targets: ["VoixfulNemotron"]),
+        // Brand CLI: `voixful transcribe …`.
+        .executable(name: "voixful", targets: ["VoixfulCLI"]),
+
+        // Existing engine library + legacy CLI (mic/file), kept during migration.
+        .library(name: "NemotronASR", targets: ["NemotronASR"]),
+        .executable(name: "nemotron-asr", targets: ["NemotronASRCLI"]),
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-argument-parser", from: "1.4.0"),
-        // TODO (Phase E): add a SentencePiece dependency for tokenizer.
-        // Candidates: a SwiftSentencePiece package, or vendoring the C++ library via a
-        // SwiftPM system module. Resolved in PLAN.md §6 / Phase E.
     ],
     targets: [
+        // MARK: Brand core (no model dependency)
+        .target(
+            name: "VoixfulSpeech",
+            dependencies: []
+        ),
+
+        // MARK: Nemotron backend (depends on core + the engine)
+        .target(
+            name: "VoixfulNemotron",
+            dependencies: ["VoixfulSpeech", "NemotronASR"]
+        ),
+
+        // MARK: Brand CLI
+        .executableTarget(
+            name: "VoixfulCLI",
+            dependencies: [
+                "VoixfulSpeech",
+                "VoixfulNemotron",
+                .product(name: "ArgumentParser", package: "swift-argument-parser"),
+            ]
+        ),
+
+        // MARK: Existing engine + legacy CLI + tests
         .target(
             name: "NemotronASR",
             dependencies: []
