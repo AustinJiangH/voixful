@@ -20,6 +20,7 @@ actor MicDisplay {
     private let tty: Bool
     private var rows = 0
     private var enabled = false          // pinned-footer mode active
+    private var model = ""               // backend display name, e.g. "Nemotron"
     private var device = ""
     private var sr = 0
     private var ch = 0
@@ -36,13 +37,15 @@ actor MicDisplay {
 
     private func out(_ s: String) { FileHandle.standardOutput.write(Data(s.utf8)) }
 
-    func header(device: String, sampleRate: Int, channels: Int) {
+    func header(model: String, device: String, sampleRate: Int, channels: Int) {
+        self.model = model
         self.device = device
         self.sr = sampleRate
         self.ch = channels
         rows = Term.rows
         guard tty, rows >= Self.footerHeight + 3 else {
-            out("voixful · listening — speak (Ctrl+C to stop)\n")
+            let suffix = model.isEmpty ? "" : " · \(model)"
+            out("Voixful\(suffix) · listening — speak (Ctrl+C to stop)\n")
             return
         }
         enabled = true
@@ -131,7 +134,11 @@ actor MicDisplay {
             + Term.dim + String(repeating: "·", count: width - filled) + Term.reset
         let peakStr = String(format: "%.3f", peak)
         let warn = hasBuffers ? "" : "   \(Term.fg(203))no audio — check mic permission\(Term.reset)"
-        return " \(Term.brand())  \(Term.fg(240))▕\(Term.reset)\(meter)\(Term.fg(240))▏\(Term.reset)"
+        // Brand, then the running model name (e.g. "Voixful · Nemotron").
+        let title = model.isEmpty
+            ? Term.brand()
+            : "\(Term.brand()) \(Term.fg(240))·\(Term.reset) \(Term.fg(151))\(model)\(Term.reset)"
+        return " \(title)  \(Term.fg(240))▕\(Term.reset)\(meter)\(Term.fg(240))▏\(Term.reset)"
             + " \(Term.dim)\(peakStr)\(Term.reset)\(warn)"
     }
 

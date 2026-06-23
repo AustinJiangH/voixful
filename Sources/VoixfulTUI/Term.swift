@@ -34,11 +34,11 @@ enum Term {
     static let italic = "\u{1B}[3m"
     static func fg(_ c: Int) -> String { "\u{1B}[38;5;\(c)m" }
 
-    /// "voixful" rendered as a teal→green 256-color gradient. Visible width 7.
+    /// "Voixful" rendered as a teal→green 256-color gradient. Visible width 7.
     static func brand() -> String {
         let palette = [45, 44, 43, 79, 115, 151, 187]
         var s = bold
-        for (i, ch) in Array("voixful").enumerated() { s += fg(palette[i]) + String(ch) }
+        for (i, ch) in Array("Voixful").enumerated() { s += fg(palette[i]) + String(ch) }
         return s + reset
     }
 }

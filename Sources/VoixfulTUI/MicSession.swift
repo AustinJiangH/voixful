@@ -79,6 +79,7 @@ public func runMicSession(transcriber: any Transcribing, debug: Bool = false) as
 
     let deviceName = AVCaptureDevice.default(for: .audio)?.localizedName ?? "unknown"
     await display.header(
+        model: transcriber.modelName,
         device: deviceName,
         sampleRate: Int(inputFormat.sampleRate),
         channels: Int(inputFormat.channelCount)

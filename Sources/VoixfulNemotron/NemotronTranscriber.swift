@@ -37,6 +37,7 @@ public actor NemotronTranscriber: Transcribing {
     // MARK: - Caller-facing surface (synchronous)
 
     public nonisolated let moduleIdentifier = "com.voixful.transcriber.nemotron"
+    public nonisolated let modelName = "Nemotron"
     public nonisolated let locale: Locale
     public nonisolated let reportingOptions: ReportingOption
     public nonisolated let attributeOptions: ResultAttributeOption

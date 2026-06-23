@@ -34,6 +34,11 @@ public protocol VoixfulSpeechModule: Sendable {
 
 /// A module that turns audio into text. Mirrors `SpeechTranscriber`.
 public protocol Transcribing: VoixfulSpeechModule {
+    /// Human-readable model name for display, e.g. "Nemotron". Surfaced by UIs
+    /// (the live mic TUI shows it next to the Voixful brand) so each backend
+    /// self-identifies.
+    var modelName: String { get }
+
     /// Locales this backend can transcribe.
     static var supportedLocales: [Locale] { get }
 
