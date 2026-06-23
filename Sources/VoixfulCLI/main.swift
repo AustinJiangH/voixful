@@ -249,6 +249,13 @@ struct Mic: AsyncParsableCommand {
             )
         }
 
+        // Report exactly which device + format we're capturing, so a flat
+        // level (silence) can be traced to the wrong/muted input device.
+        let deviceName = AVCaptureDevice.default(for: .audio)?.localizedName ?? "unknown"
+        let info = "[mic] input: \(deviceName) — \(Int(inputFormat.sampleRate)) Hz, "
+            + "\(inputFormat.channelCount) ch\n"
+        FileHandle.standardError.write(Data(info.utf8))
+
         micBufferCount = 0
         micPeakLevel = 0
         inputNode.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { buffer, _ in
