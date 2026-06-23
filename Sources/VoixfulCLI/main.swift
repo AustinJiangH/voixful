@@ -200,7 +200,10 @@ struct Mic: AsyncParsableCommand {
         }
         let analyzer = VoixfulAnalyzer(modules: [transcriber])
 
-        let display = MicDisplay(tty: Term.isTTY)
+        // --debug bypasses the full-screen UI so the per-chunk [dbg] lines
+        // (peak + partial text) are readable — the fastest way to tell silence
+        // (peak≈0) from a transcription problem (peak>0 but empty text).
+        let display = MicDisplay(tty: Term.isTTY && !debug)
 
         // Drive the live UI from the result stream: volatile partials refresh
         // the sticky status line; finals commit into the scrollback above it.
