@@ -330,8 +330,30 @@ public actor StreamingASR {
             // newMelFrames is row-major [nMels × T_new] flattened. Number of
             // frames = total elements / nMels.
             let newFrames = newMelFrames.count / Self.nMels
-            melBuffer.append(contentsOf: newMelFrames)
-            melBufferFrames += newFrames
+            // melBuffer is row-major [nMels × melBufferFrames]. We must
+            // HORIZONTALLY concatenate the new [nMels × T_new] block — i.e.
+            // append T_new columns to each of the nMels rows — NOT flat-append
+            // (which interleaves the two blocks' rows and scrambles the mel
+            // bins). Flat-append happened to work for a single feed() call
+            // (one block, no prior data) but corrupted the layout on every
+            // subsequent call, feeding the encoder garbage → blank tokens.
+            if melBufferFrames == 0 {
+                melBuffer = newMelFrames
+                melBufferFrames = newFrames
+            } else {
+                let oldFrames = melBufferFrames
+                let total = oldFrames + newFrames
+                var merged = [Float](repeating: 0, count: Self.nMels * total)
+                for m in 0..<Self.nMels {
+                    let oldRow = m * oldFrames
+                    let newRow = m * newFrames
+                    let dstRow = m * total
+                    for t in 0..<oldFrames { merged[dstRow + t] = melBuffer[oldRow + t] }
+                    for t in 0..<newFrames { merged[dstRow + oldFrames + t] = newMelFrames[newRow + t] }
+                }
+                melBuffer = merged
+                melBufferFrames = total
+            }
         }
 
         // Now consume as many chunks as we have. Each chunk needs
