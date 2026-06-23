@@ -200,15 +200,18 @@ struct Mic: AsyncParsableCommand {
         }
         let analyzer = VoixfulAnalyzer(modules: [transcriber])
 
-        // Print results as they arrive: volatile partials update one line in
-        // place; finals land on their own line.
+        let display = MicDisplay(tty: Term.isTTY)
+
+        // Drive the live UI from the result stream: volatile partials refresh
+        // the sticky status line; finals commit into the scrollback above it.
         let printer = Task {
             for try await result in transcriber.results {
                 let text = String(result.text.characters)
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !text.isEmpty else { continue }
-                let line = result.isFinal ? "\u{1B}[2K\r\(text)\n" : "\u{1B}[2K\r\(truncateTail(text))"
-                FileHandle.standardOutput.write(Data(line.utf8))
+                if result.isFinal {
+                    await display.commitFinal(text)
+                } else {
+                    await display.setPartial(text)
+                }
             }
         }
 
@@ -232,12 +235,14 @@ struct Mic: AsyncParsableCommand {
             )
         }
 
-        // Report exactly which device + format we're capturing, so a flat
-        // level (silence) can be traced to the wrong/muted input device.
+        // Branded header banner (also surfaces the device so a flat level can be
+        // traced to the wrong/muted input).
         let deviceName = AVCaptureDevice.default(for: .audio)?.localizedName ?? "unknown"
-        let info = "[mic] input: \(deviceName) — \(Int(inputFormat.sampleRate)) Hz, "
-            + "\(inputFormat.channelCount) ch\n"
-        FileHandle.standardError.write(Data(info.utf8))
+        await display.header(
+            device: deviceName,
+            sampleRate: Int(inputFormat.sampleRate),
+            channels: Int(inputFormat.channelCount)
+        )
 
         micBufferCount = 0
         micPeakLevel = 0
@@ -251,7 +256,6 @@ struct Mic: AsyncParsableCommand {
         }
 
         installMicSignalHandler()
-        FileHandle.standardError.write(Data("[mic] Listening — speak; Ctrl+C to stop.\n".utf8))
 
         do {
             try engine.start()
@@ -260,38 +264,30 @@ struct Mic: AsyncParsableCommand {
             throw ValidationError("AVAudioEngine.start() failed: \(error.localizedDescription)")
         }
 
-        // Idle until Ctrl+C, printing a 1 Hz input-level meter to stderr so a
-        // silent mic (no level) is distinguishable from no input at all
-        // (no buffers).
-        var ticks = 0
+        // Refresh the level meter ~5×/s while we wait for Ctrl+C. The peak is
+        // accumulated on the audio thread; we sample-and-reset it here. The
+        // meter and the partial share ONE sticky line owned by `display`, so
+        // they never fight over the terminal the way the old stdout/stderr
+        // split did.
         while !micShouldStop {
-            try? await Task.sleep(nanoseconds: 1_000_000_000)
-            ticks += 1
+            try? await Task.sleep(nanoseconds: 200_000_000)
             let level = micPeakLevel
             micPeakLevel = 0
-            let bars = Int((min(level, 1.0) * 20).rounded())
-            let meter = String(repeating: "▮", count: bars) + String(repeating: "·", count: 20 - bars)
-            // Show the numeric peak too: bars can round to empty for quiet
-            // speech, so peak distinguishes "quiet audio" from "true silence".
-            let status = micBufferCount == 0
-                ? "no audio buffers — check input device/permission"
-                : "level [\(meter)] peak=\(String(format: "%.4f", level))"
-            FileHandle.standardError.write(Data("\u{1B}[2K\r[mic] \(status)".utf8))
-            _ = ticks
+            await display.setLevel(level, hasBuffers: micBufferCount > 0)
         }
-        FileHandle.standardError.write(Data("\u{1B}[2K\r".utf8))
 
         // Teardown: stop capture, close the input stream, finalize → final
-        // result, then wait for the printer to flush it.
+        // result, wait for the printer to flush it, then clear the status line.
         engine.stop()
         inputNode.removeTap(onBus: 0)
         inputBuilder.finish()
         try await analyzer.finalizeAndFinishThroughEndOfInput()
         try await printer.value
+        await display.finish()
 
         if micBufferCount == 0 {
             FileHandle.standardError.write(Data(
-                "[mic] received no audio. The mic may be muted or another app holds it.\n".utf8))
+                "[mic] received no audio — the mic may be muted or held by another app.\n".utf8))
         }
     }
 }
@@ -321,12 +317,126 @@ private func copyPCMBuffer(_ src: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
     return dst
 }
 
-/// Keep a partial line within the terminal width by trimming from the left so
-/// the most recently spoken words stay visible.
-private func truncateTail(_ text: String) -> String {
-    let cols = Int(ProcessInfo.processInfo.environment["COLUMNS"] ?? "") ?? 100
-    guard text.count > cols - 2 else { return text }
-    return "…" + String(text.suffix(cols - 3))
+// MARK: - Terminal styling
+
+/// Tiny ANSI + terminal helpers for the live mic UI.
+private enum Term {
+    /// Only style when stdout is a real terminal; piped output stays plain.
+    static let isTTY = isatty(STDOUT_FILENO) != 0
+
+    /// Current terminal width (columns), best-effort.
+    static var cols: Int {
+        var ws = winsize()
+        if ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0, ws.ws_col > 0 { return Int(ws.ws_col) }
+        if let c = ProcessInfo.processInfo.environment["COLUMNS"], let n = Int(c), n > 0 { return n }
+        return 80
+    }
+
+    static let reset = "\u{1B}[0m"
+    static let bold = "\u{1B}[1m"
+    static let dim = "\u{1B}[2m"
+    static let italic = "\u{1B}[3m"
+    static func fg(_ c: Int) -> String { "\u{1B}[38;5;\(c)m" }
+
+    /// "voixful" rendered as a teal→green 256-color gradient. Visible width 7.
+    static func brand() -> String {
+        let palette = [45, 44, 43, 79, 115, 151, 187]
+        var s = bold
+        for (i, ch) in Array("voixful").enumerated() { s += fg(palette[i]) + String(ch) }
+        return s + reset
+    }
+}
+
+// MARK: - Live mic display
+
+/// Owns the terminal during `voixful mic`: a one-time branded header, a
+/// scrollback of committed finals, and a single sticky bottom line that fuses
+/// the brand, a colored level meter, and the live partial. All writes funnel
+/// through this actor, so the meter and the partial never clobber each other.
+private actor MicDisplay {
+    private let tty: Bool
+    private var partial = ""
+    private var peak: Float = 0
+    private var hasBuffers = true
+    private var statusShown = false
+
+    init(tty: Bool) { self.tty = tty }
+
+    private func out(_ s: String) { FileHandle.standardOutput.write(Data(s.utf8)) }
+
+    func header(device: String, sampleRate: Int, channels: Int) {
+        guard tty else { out("voixful · listening (Ctrl+C to stop)\n"); return }
+        let rule = Term.dim + String(repeating: "─", count: min(Term.cols - 2, 54)) + Term.reset
+        out("\n  \(Term.brand())  \(Term.dim)· on-device speech\(Term.reset)\n")
+        out("  \(rule)\n")
+        out("  \(Term.dim)mic\(Term.reset)   \(device) · \(sampleRate / 1000) kHz · \(channels)ch\n")
+        out("  \(Term.dim)stop\(Term.reset)  Ctrl+C\n")
+        out("  \(rule)\n\n")
+        render()
+    }
+
+    func setPartial(_ text: String) {
+        partial = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        render()
+    }
+
+    func setLevel(_ p: Float, hasBuffers: Bool) {
+        peak = p
+        self.hasBuffers = hasBuffers
+        render()
+    }
+
+    func commitFinal(_ text: String) {
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty else { return }
+        eraseStatus()
+        out(tty ? "  \(Term.fg(78))▸\(Term.reset) \(t)\n" : "\(t)\n")
+        partial = ""
+        render()
+    }
+
+    func finish() {
+        eraseStatus()
+    }
+
+    private func eraseStatus() {
+        guard tty, statusShown else { return }
+        out("\u{1B}[2K\r")
+        statusShown = false
+    }
+
+    private func render() {
+        guard tty else { return }
+        eraseStatus()
+
+        // Colored level meter (green → amber → red).
+        let width = 14
+        let level = min(max(peak, 0), 1)
+        let filled = Int((level * Float(width)).rounded())
+        let color = peak > 0.6 ? 203 : (peak > 0.22 ? 215 : 78)
+        let meter = Term.fg(color) + String(repeating: "▮", count: filled)
+            + Term.dim + String(repeating: "·", count: width - filled) + Term.reset
+        let peakStr = String(format: "%.2f", peak)
+
+        // Visible prefix: " voixful  ▕<14>▏ 0.00  "
+        let prefixVisible = 1 + 7 + 2 + 1 + width + 1 + 1 + peakStr.count + 2
+        let budget = max(8, Term.cols - prefixVisible - 1)
+
+        let bodyRaw: String
+        if !hasBuffers {
+            bodyRaw = "\(Term.fg(203))no audio — check mic permission\(Term.reset)"
+        } else if partial.isEmpty {
+            bodyRaw = "\(Term.dim)listening…\(Term.reset)"
+        } else {
+            var p = partial
+            if p.count > budget { p = "…" + String(p.suffix(budget - 1)) }
+            bodyRaw = "\(Term.italic)\(Term.dim)\(p)\(Term.reset)"
+        }
+
+        out(" \(Term.brand())  \(Term.fg(240))▕\(Term.reset)\(meter)\(Term.fg(240))▏\(Term.reset)"
+            + " \(Term.dim)\(peakStr)\(Term.reset)  \(bodyRaw)")
+        statusShown = true
+    }
 }
 
 // MARK: - languages
