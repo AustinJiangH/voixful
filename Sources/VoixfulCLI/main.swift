@@ -404,8 +404,10 @@ private actor MicDisplay {
         enabled = true
         out("\u{1B}[2J\u{1B}[H")                              // clear screen, home
         out("\u{1B}[1;\(rows - Self.footerHeight)r")          // scroll region above footer
-        out("\u{1B}[1;1H")                                    // cursor to top of region
-        out("\(Term.brand())  \(Term.dim)· on-device speech — speak\(Term.reset)\n\n")
+        // Park the cursor at the BOTTOM of the scroll region so live text
+        // appears just above the footer and older lines scroll up — the
+        // newest words stay where the eye is, next to the meter.
+        out("\u{1B}[\(rows - Self.footerHeight);1H")
         printed = ""
         drawFooter()
     }
@@ -469,12 +471,17 @@ private actor MicDisplay {
 
     private func footerStatus() -> String {
         let width = 18
-        let level = min(max(peak, 0), 1)
+        // Map peak to a dB scale so the meter spans the huge dynamic range of
+        // real mics: quiet speech (peak ~0.007 ≈ -43 dB) still shows several
+        // bars, silence (< -60 dB) shows none, loud speech fills it. A linear
+        // gain can't do both — that's why the bar looked dead at 0.007.
+        let db = 20 * log10f(max(peak, 1e-6))
+        let level = min(max((db + 60) / 48, 0), 1)   // -60 dB → empty, -12 dB → full
         let filled = Int((level * Float(width)).rounded())
-        let color = peak > 0.6 ? 203 : (peak > 0.22 ? 215 : 78)
+        let color = level > 0.85 ? 203 : (level > 0.6 ? 215 : 78)
         let meter = Term.fg(color) + String(repeating: "▮", count: filled)
             + Term.dim + String(repeating: "·", count: width - filled) + Term.reset
-        let peakStr = String(format: "%.2f", peak)
+        let peakStr = String(format: "%.3f", peak)
         let warn = hasBuffers ? "" : "   \(Term.fg(203))no audio — check mic permission\(Term.reset)"
         return " \(Term.brand())  \(Term.fg(240))▕\(Term.reset)\(meter)\(Term.fg(240))▏\(Term.reset)"
             + " \(Term.dim)\(peakStr)\(Term.reset)\(warn)"
