@@ -176,18 +176,18 @@ struct Mic: AsyncParsableCommand {
 
     func run() async throws {
         // Build the brand surface with volatile reporting so we get live
-        // partials in addition to the final result. Batch mode (re-transcribe
-        // the growing utterance) is the path that worked end-to-end; it has the
-        // O(n^2)-with-utterance-length cost, but it produces output. Let
-        // AVAudioEngine surface the mic prompt implicitly (the embedded
-        // Info.plist gives it a usage string).
+        // partials in addition to the final result. Streaming mode drives
+        // StreamingASR.feed() incrementally — fixed cost per chunk, no
+        // re-transcription of the growing utterance — so it stays fast no
+        // matter how long the session runs. Let AVAudioEngine surface the mic
+        // prompt implicitly (the embedded Info.plist gives it a usage string).
         let transcriber: NemotronTranscriber
         do {
             transcriber = try NemotronTranscriber(
                 modelURL: URL(fileURLWithPath: model),
                 locale: Locale(identifier: language),
                 chunkSizeMS: chunk,
-                mode: .batch,
+                mode: .streaming,
                 reportingOptions: [.volatileResults],
                 attributeOptions: []
             )
