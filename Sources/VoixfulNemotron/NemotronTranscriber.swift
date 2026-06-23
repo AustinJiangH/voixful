@@ -53,13 +53,21 @@ public actor NemotronTranscriber: Transcribing {
     private let language: Language
     private let chunkSize: ChunkSize
     private let mode: ProcessingMode
+    private let debug: Bool
     private let converter = AudioInputConverter()
 
     private var engine: StreamingASR?
     private var utterance: [Float] = []   // batch mode only
+    private var pendingStream: [Float] = []   // streaming mode — batched before feed()
     private var samplesSeen = 0           // both modes — drives the time range
     private var utteranceStart: Double?
     private var lastVolatileCount = 0      // batch mode only
+
+    /// Streaming mode feeds the engine in blocks of at least this many samples
+    /// (≈1 s @ 16 kHz). The streaming mel path degrades when fed many tiny
+    /// buffers (per-call reflect-pad gaps); larger blocks keep it close to the
+    /// single-buffer path that transcribes accurately. Still O(1) per chunk.
+    private static let streamFeedThreshold = 16_000
 
     /// Minimum new audio (samples @ 16 kHz) between volatile re-transcriptions
     /// in `.batch` mode. 8000 = 0.5 s; keeps the re-transcribe cost off the
@@ -82,7 +90,8 @@ public actor NemotronTranscriber: Transcribing {
         chunkSizeMS: Int = 320,
         mode: ProcessingMode = .batch,
         reportingOptions: ReportingOption = [],
-        attributeOptions: ResultAttributeOption = []
+        attributeOptions: ResultAttributeOption = [],
+        debug: Bool = false
     ) throws {
         let tag = locale.identifier(.bcp47)
         guard let language = Language(rawValue: tag) else {
@@ -99,6 +108,7 @@ public actor NemotronTranscriber: Transcribing {
         self.locale = locale
         self.chunkSize = chunkSize
         self.mode = mode
+        self.debug = debug
         self.reportingOptions = reportingOptions
         self.attributeOptions = attributeOptions
 
@@ -150,10 +160,17 @@ public actor NemotronTranscriber: Transcribing {
             }
 
         case .streaming:
-            // Fixed cost per chunk: feed advances engine state and returns any
-            // partials produced this call. We always feed (to advance state)
-            // but only emit when volatile reporting is requested.
-            let partials = try await engine.feed(samples)
+            // Batch into ≥~1 s blocks before feeding — the streaming mel path
+            // degrades on many tiny buffers. Cost stays O(1) per chunk.
+            pendingStream.append(contentsOf: samples)
+            guard pendingStream.count >= Self.streamFeedThreshold else { return }
+            let block = pendingStream
+            pendingStream.removeAll(keepingCapacity: true)
+            let partials = try await engine.feed(block)
+            if debug {
+                logDebug("feed=\(block.count) peak=\(Self.peak(block)) "
+                    + "partials=\(partials.count) text='\(partials.last?.text ?? "")'")
+            }
             guard reportingOptions.contains(.volatileResults), let last = partials.last else { return }
             continuation.yield(makeResult(text: last.text, isFinal: false))
         }
@@ -167,9 +184,17 @@ public actor NemotronTranscriber: Transcribing {
         do {
             let transcript: Transcript
             switch mode {
-            case .batch:     transcript = try await engine.transcribe(audio: utterance)
-            case .streaming: transcript = try await engine.finish()
+            case .batch:
+                transcript = try await engine.transcribe(audio: utterance)
+            case .streaming:
+                // Flush any audio held back below the feed threshold.
+                if !pendingStream.isEmpty {
+                    _ = try await engine.feed(pendingStream)
+                    pendingStream.removeAll(keepingCapacity: true)
+                }
+                transcript = try await engine.finish()
             }
+            if debug { logDebug("finalize text='\(transcript.text)'") }
             continuation.yield(makeResult(text: transcript.text, isFinal: true))
             continuation.finish()
         } catch {
@@ -201,5 +226,17 @@ public actor NemotronTranscriber: Transcribing {
             duration: CMTime(seconds: duration, preferredTimescale: 1_000)
         )
         return TranscriptionResult(text: text, range: range, isFinal: isFinal)
+    }
+
+    // MARK: - Debug
+
+    private nonisolated func logDebug(_ message: String) {
+        FileHandle.standardError.write(Data("[dbg] \(message)\n".utf8))
+    }
+
+    private static func peak(_ samples: [Float]) -> String {
+        var p: Float = 0
+        for s in samples { p = max(p, abs(s)) }
+        return String(format: "%.4f", p)
     }
 }

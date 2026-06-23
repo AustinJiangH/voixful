@@ -174,6 +174,9 @@ struct Mic: AsyncParsableCommand {
     @Option(help: "Streaming chunk size in ms (80, 160, 320, 560, 1120).")
     var chunk: Int = 320
 
+    @Flag(help: "Print per-chunk feed diagnostics (sample count, peak, partial text) to stderr.")
+    var debug: Bool = false
+
     func run() async throws {
         // Build the brand surface with volatile reporting so we get live
         // partials in addition to the final result. Streaming mode drives
@@ -189,7 +192,8 @@ struct Mic: AsyncParsableCommand {
                 chunkSizeMS: chunk,
                 mode: .streaming,
                 reportingOptions: [.volatileResults],
-                attributeOptions: []
+                attributeOptions: [],
+                debug: debug
             )
         } catch {
             throw ValidationError("could not create transcriber: \(error)")
