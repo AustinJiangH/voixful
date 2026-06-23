@@ -148,9 +148,37 @@ private struct TranscriptJSON: Encodable {
 /// polls. Bool stores are atomic on every Darwin arch we target.
 nonisolated(unsafe) private var micShouldStop = false
 
+/// Cheap diagnostics updated from the audio tap and read by the idle loop, so
+/// "nothing shows up" can be diagnosed as silence (mic muted / wrong device)
+/// vs. no audio at all (no permission / no buffers). Scalar stores are atomic
+/// on every Darwin arch we target; exact values don't matter for a meter.
+nonisolated(unsafe) private var micBufferCount = 0
+nonisolated(unsafe) private var micPeakLevel: Float = 0
+
 private func installMicSignalHandler() {
     let handler: @convention(c) (Int32) -> Void = { _ in micShouldStop = true }
     signal(SIGINT, handler)
+}
+
+/// Ensure the process is authorized to capture audio. For an un-bundled CLI the
+/// implicit TCC prompt is unreliable; requesting access explicitly triggers it
+/// and lets us fail with a clear message instead of silently receiving silence.
+private func ensureMicrophoneAccess() async throws {
+    switch AVCaptureDevice.authorizationStatus(for: .audio) {
+    case .authorized:
+        return
+    case .notDetermined:
+        guard await AVCaptureDevice.requestAccess(for: .audio) else {
+            throw ValidationError("microphone access was denied at the prompt.")
+        }
+    case .denied, .restricted:
+        throw ValidationError(
+            "microphone access is off for this binary. Enable it in "
+            + "System Settings → Privacy & Security → Microphone, then re-run."
+        )
+    @unknown default:
+        return
+    }
 }
 
 struct Mic: AsyncParsableCommand {
@@ -168,6 +196,10 @@ struct Mic: AsyncParsableCommand {
     var chunk: Int = 320
 
     func run() async throws {
+        // Gate on microphone access first — otherwise an un-bundled CLI can
+        // start the engine but receive only silence, and nothing ever prints.
+        try await ensureMicrophoneAccess()
+
         // Build the brand surface with volatile reporting so we get live
         // partials in addition to the final result.
         let transcriber: NemotronTranscriber
@@ -217,7 +249,11 @@ struct Mic: AsyncParsableCommand {
             )
         }
 
+        micBufferCount = 0
+        micPeakLevel = 0
         inputNode.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { buffer, _ in
+            micBufferCount += 1
+            micPeakLevel = max(micPeakLevel, peakAmplitude(buffer))
             // The engine reuses `buffer` after this returns, so deep-copy before
             // handing ownership to the analyzer.
             guard let copy = copyPCMBuffer(buffer) else { return }
@@ -234,10 +270,24 @@ struct Mic: AsyncParsableCommand {
             throw ValidationError("AVAudioEngine.start() failed: \(error.localizedDescription)")
         }
 
-        // Idle until Ctrl+C.
+        // Idle until Ctrl+C, printing a 1 Hz input-level meter to stderr so a
+        // silent mic (no level) is distinguishable from no input at all
+        // (no buffers).
+        var ticks = 0
         while !micShouldStop {
-            try? await Task.sleep(nanoseconds: 100_000_000)
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            ticks += 1
+            let level = micPeakLevel
+            micPeakLevel = 0
+            let bars = Int((min(level, 1.0) * 20).rounded())
+            let meter = String(repeating: "▮", count: bars) + String(repeating: "·", count: 20 - bars)
+            let status = micBufferCount == 0
+                ? "no audio buffers — check input device/permission"
+                : "level [\(meter)]"
+            FileHandle.standardError.write(Data("\u{1B}[2K\r[mic] \(status)".utf8))
+            _ = ticks
         }
+        FileHandle.standardError.write(Data("\u{1B}[2K\r".utf8))
 
         // Teardown: stop capture, close the input stream, finalize → final
         // result, then wait for the printer to flush it.
@@ -246,7 +296,22 @@ struct Mic: AsyncParsableCommand {
         inputBuilder.finish()
         try await analyzer.finalizeAndFinishThroughEndOfInput()
         try await printer.value
+
+        if micBufferCount == 0 {
+            FileHandle.standardError.write(Data(
+                "[mic] received no audio. The mic may be muted or another app holds it.\n".utf8))
+        }
     }
+}
+
+/// Peak absolute sample value across channel 0 — a cheap level estimate.
+private func peakAmplitude(_ buffer: AVAudioPCMBuffer) -> Float {
+    let n = Int(buffer.frameLength)
+    guard n > 0, let ch = buffer.floatChannelData else { return 0 }
+    var peak: Float = 0
+    let p = ch[0]
+    for i in 0..<n { peak = max(peak, abs(p[i])) }
+    return peak
 }
 
 /// Deep-copy a float PCM buffer so it outlives the tap callback.
