@@ -45,6 +45,18 @@ let package = Package(
                 "VoixfulSpeech",
                 "VoixfulNemotron",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
+            ],
+            // Embed an Info.plist (with NSMicrophoneUsageDescription) into the
+            // executable so macOS TCC grants REAL microphone audio to `voixful
+            // mic` — without it a bare CLI binary is fed digital silence. Path
+            // is resolved by the linker relative to the package root.
+            linkerSettings: [
+                .unsafeFlags([
+                    "-Xlinker", "-sectcreate",
+                    "-Xlinker", "__TEXT",
+                    "-Xlinker", "__info_plist",
+                    "-Xlinker", "Sources/VoixfulCLI/Info.plist",
+                ])
             ]
         ),
 

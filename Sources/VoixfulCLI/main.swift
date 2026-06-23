@@ -311,13 +311,17 @@ struct Mic: AsyncParsableCommand {
     }
 }
 
-/// Peak absolute sample value across channel 0 — a cheap level estimate.
+/// Peak absolute sample value across ALL channels — a cheap level estimate.
+/// Scans every channel because the MacBook mic array can place signal off
+/// channel 0.
 private func peakAmplitude(_ buffer: AVAudioPCMBuffer) -> Float {
     let n = Int(buffer.frameLength)
-    guard n > 0, let ch = buffer.floatChannelData else { return 0 }
+    guard n > 0, let channels = buffer.floatChannelData else { return 0 }
     var peak: Float = 0
-    let p = ch[0]
-    for i in 0..<n { peak = max(peak, abs(p[i])) }
+    for c in 0..<Int(buffer.format.channelCount) {
+        let p = channels[c]
+        for i in 0..<n { peak = max(peak, abs(p[i])) }
+    }
     return peak
 }
 
