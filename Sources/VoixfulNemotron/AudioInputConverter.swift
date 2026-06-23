@@ -23,12 +23,20 @@ final class AudioInputConverter {
     /// already in the target format; otherwise builds (and caches) an
     /// `AVAudioConverter` for the incoming format.
     func convert(_ buffer: AVAudioPCMBuffer) throws -> [Float] {
-        let inFormat = buffer.format
+        // CRITICAL: down-mix multichannel input to mono BEFORE the rate
+        // converter. `AVAudioConverter` cannot mix a *discrete* N-channel layout
+        // (e.g. the MacBook Pro mic array's 3-channel discrete format) down to
+        // mono — it returns `.haveData` but emits all-zero (silent) output. We
+        // average the channels into a mono buffer ourselves first, then let the
+        // cached converter handle only the sample-rate change (mono → 16 kHz).
+        // Stereo/mono inputs pass through this unchanged in behavior.
+        let source = Self.downmixToMono(buffer)
+        let inFormat = source.format
 
         if inFormat.sampleRate == 16_000,
            inFormat.channelCount == 1,
            inFormat.commonFormat == .pcmFormatFloat32 {
-            return Self.floatChannel(buffer)
+            return Self.floatChannel(source)
         }
 
         if converter == nil || !(sourceFormat?.isEqual(inFormat) ?? false) {
@@ -45,7 +53,7 @@ final class AudioInputConverter {
         }
 
         let ratio = 16_000.0 / inFormat.sampleRate
-        let capacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio + 256.0)
+        let capacity = AVAudioFrameCount(Double(source.frameLength) * ratio + 256.0)
         guard let output = AVAudioPCMBuffer(pcmFormat: Self.target, frameCapacity: capacity) else {
             throw VoixfulError.audioConversionFailed("cannot allocate output buffer")
         }
@@ -59,7 +67,7 @@ final class AudioInputConverter {
             }
             consumed = true
             outStatus.pointee = .haveData
-            return buffer
+            return source
         }
         if status == .error || convError != nil {
             throw VoixfulError.audioConversionFailed(
@@ -73,5 +81,42 @@ final class AudioInputConverter {
         let n = Int(buffer.frameLength)
         guard n > 0, let channels = buffer.floatChannelData else { return [] }
         return Array(UnsafeBufferPointer(start: channels[0], count: n))
+    }
+
+    /// Average all channels of a non-interleaved Float32 buffer into a single
+    /// mono buffer at the SAME sample rate. Returns `buffer` unchanged when it
+    /// is already mono (or not float/non-interleaved, in which case we leave the
+    /// down-mix to the rate converter). This is the down-mix `AVAudioConverter`
+    /// fails to perform for discrete multichannel layouts.
+    private static func downmixToMono(_ buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer {
+        let inFormat = buffer.format
+        let channelCount = Int(inFormat.channelCount)
+        guard channelCount > 1,
+              inFormat.commonFormat == .pcmFormatFloat32,
+              !inFormat.isInterleaved,
+              let src = buffer.floatChannelData else {
+            return buffer
+        }
+
+        guard let monoFormat = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: inFormat.sampleRate,
+            channels: 1,
+            interleaved: false
+        ), let mono = AVAudioPCMBuffer(pcmFormat: monoFormat, frameCapacity: buffer.frameLength),
+           let dst = mono.floatChannelData else {
+            return buffer
+        }
+
+        let n = Int(buffer.frameLength)
+        mono.frameLength = buffer.frameLength
+        let scale = 1.0 / Float(channelCount)
+        let out = dst[0]
+        for i in 0..<n {
+            var sum: Float = 0
+            for c in 0..<channelCount { sum += src[c][i] }
+            out[i] = sum * scale
+        }
+        return mono
     }
 }

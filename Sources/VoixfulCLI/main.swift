@@ -267,9 +267,11 @@ struct Mic: AsyncParsableCommand {
             micPeakLevel = 0
             let bars = Int((min(level, 1.0) * 20).rounded())
             let meter = String(repeating: "▮", count: bars) + String(repeating: "·", count: 20 - bars)
+            // Show the numeric peak too: bars can round to empty for quiet
+            // speech, so peak distinguishes "quiet audio" from "true silence".
             let status = micBufferCount == 0
                 ? "no audio buffers — check input device/permission"
-                : "level [\(meter)]"
+                : "level [\(meter)] peak=\(String(format: "%.4f", level))"
             FileHandle.standardError.write(Data("\u{1B}[2K\r[mic] \(status)".utf8))
             _ = ticks
         }
