@@ -160,27 +160,6 @@ private func installMicSignalHandler() {
     signal(SIGINT, handler)
 }
 
-/// Ensure the process is authorized to capture audio. For an un-bundled CLI the
-/// implicit TCC prompt is unreliable; requesting access explicitly triggers it
-/// and lets us fail with a clear message instead of silently receiving silence.
-private func ensureMicrophoneAccess() async throws {
-    switch AVCaptureDevice.authorizationStatus(for: .audio) {
-    case .authorized:
-        return
-    case .notDetermined:
-        guard await AVCaptureDevice.requestAccess(for: .audio) else {
-            throw ValidationError("microphone access was denied at the prompt.")
-        }
-    case .denied, .restricted:
-        throw ValidationError(
-            "microphone access is off for this binary. Enable it in "
-            + "System Settings → Privacy & Security → Microphone, then re-run."
-        )
-    @unknown default:
-        return
-    }
-}
-
 struct Mic: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         abstract: "Transcribe live from the default microphone (Ctrl+C to stop)."
@@ -196,19 +175,19 @@ struct Mic: AsyncParsableCommand {
     var chunk: Int = 320
 
     func run() async throws {
-        // Gate on microphone access first — otherwise an un-bundled CLI can
-        // start the engine but receive only silence, and nothing ever prints.
-        try await ensureMicrophoneAccess()
-
         // Build the brand surface with volatile reporting so we get live
-        // partials in addition to the final result.
+        // partials in addition to the final result. Batch mode (re-transcribe
+        // the growing utterance) is the path that worked end-to-end; it has the
+        // O(n^2)-with-utterance-length cost, but it produces output. Let
+        // AVAudioEngine surface the mic prompt implicitly (the embedded
+        // Info.plist gives it a usage string).
         let transcriber: NemotronTranscriber
         do {
             transcriber = try NemotronTranscriber(
                 modelURL: URL(fileURLWithPath: model),
                 locale: Locale(identifier: language),
                 chunkSizeMS: chunk,
-                mode: .streaming,
+                mode: .batch,
                 reportingOptions: [.volatileResults],
                 attributeOptions: []
             )
