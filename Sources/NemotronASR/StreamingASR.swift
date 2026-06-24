@@ -54,7 +54,7 @@ public actor StreamingASR {
 
     // MARK: - Sessions
 
-    private let preprocess: PreprocessSession
+    private let preprocess: PreprocessSession?
     private let encoder: EncoderSession
     private let prediction: PredictionSession
     private let joiner: JoinerSession
@@ -190,7 +190,11 @@ public actor StreamingASR {
         // and PredictionSession each own state buffers; JoinerSession is
         // stateless. Any of these can throw `missingFunction` if the .aimodel
         // doesn't contain the named function — that error propagates here as-is.
-        self.preprocess = try await PreprocessSession(model: model)
+        // Optional: the baked preprocessor (`preprocess_audio`) is only used by
+        // the batch `transcribe(audio:)` path. The streaming `feed()` path uses
+        // the Swift MelExtractor, so a model without the baked preprocessor can
+        // still run streaming.
+        self.preprocess = try? await PreprocessSession(model: model)
         self.encoder = try await EncoderSession(model: model)
         self.prediction = try await PredictionSession(model: model)
         self.joiner = try await JoinerSession(model: model)
@@ -534,6 +538,9 @@ public actor StreamingASR {
             let cpyMs = Date().timeIntervalSince(cpyStart) * 1000
 
             let preStart = Date()
+            guard let preprocess else {
+                throw ASRError.missingFunction("preprocess_audio")
+            }
             let mel = try await preprocess.extract(audio: audioND, length: lengthND)
             let preMs = Date().timeIntervalSince(preStart) * 1000
 

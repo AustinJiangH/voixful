@@ -6,6 +6,7 @@ import argparse
 from pathlib import Path
 
 import coreai_torch
+import torch
 
 from .export import export_encoder, export_joiner, export_prediction
 from .extract import extract_modules_from_nemo
@@ -48,9 +49,38 @@ def main(argv: list[str] | None = None) -> int:
         default=DEFAULT_MAX_CHUNK_FRAMES,
         help="Upper bound on dynamic mel time axis (10 ms hop). 112 == 1120 ms.",
     )
+    parser.add_argument(
+        "--quantize",
+        choices=["none", "int8"],
+        default="none",
+        help=(
+            "Encoder weight quantization (PLAN.md §3 Step 5b). 'int8' applies "
+            "coreai_opt's INT8 weight-only preset to the encoder (the bulk of the "
+            "model); prediction LSTM + joiner stay FP16. Default 'none'."
+        ),
+    )
     args = parser.parse_args(argv)
 
     output_path = Path(args.output)
+
+    # Build the INT8 weight-only quantizer BEFORE importing NeMo (coreai_opt's
+    # pydantic models resolve cleanly only in a NeMo-free import state). Use the
+    # official `QuantizerConfig.presets.w8()` recipe — data-free, weight-only,
+    # graph mode, op key 'weight' — NOT a hand-rolled config. See
+    # apple/coreai-optimization + WWDC26 session 325.
+    quantize_encoder = None
+    if args.quantize == "int8":
+        from coreai_opt.quantization import Quantizer, QuantizerConfig
+
+        qcfg = QuantizerConfig.presets.w8()
+
+        def quantize_encoder(enc):
+            # Match export_encoder's fixed-shape example inputs (T=128).
+            example_mel = torch.zeros(1, 128, 128, dtype=torch.float32)
+            example_length = torch.tensor([128], dtype=torch.int32)
+            q = Quantizer(enc, qcfg)
+            q.prepare(example_inputs=(example_mel, example_length))
+            return q.finalize()
 
     # Step (a): pull the raw nn.Modules out of the NeMo ASRModel.
     modules = extract_modules_from_nemo(args.model_id)
@@ -67,6 +97,11 @@ def main(argv: list[str] | None = None) -> int:
     encoder_wrapper.eval()
     prediction_wrapper.eval()
     joiner_wrapper.eval()
+
+    # Step (b2): apply the INT8 weight-only quantizer to the encoder.
+    if quantize_encoder is not None:
+        encoder_wrapper = quantize_encoder(encoder_wrapper)
+        print("Applied INT8 weight-only quantization to the encoder (presets.w8).")
 
     # Step (c): torch.export each.
     exported_encoder = export_encoder(encoder_wrapper, max_chunk_frames=args.max_chunk_frames)
