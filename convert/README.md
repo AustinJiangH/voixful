@@ -31,8 +31,26 @@ into the others.
 
 ## Quantization (INT8 encoder)
 
-The default artifacts are **FP16, no weight quantization** (see `PLAN.md` §3
-Step 5). `coreai_opt` INT4/INT8 weight-only quantization is the lever for cutting
-encoder size/RAM (the encoder is ~85% of compute and the bulk of the on-disk
-size) — see each model's `convert.py` step (e) for where the `coreai_opt` pass
-slots in, and `PLAN.md` §3 Step 5b for the recipe.
+`nemotron/.../convert.py --quantize int8` applies `coreai_opt`'s INT8 weight-only
+preset (`QuantizerConfig.presets.w8()`) to the encoder. Requires `coreai_opt` with
+the `presets` API and **`pydantic<2.10`** (the `>=2.0` default pulls a 2.14 alpha
+that breaks coreai_opt's config models).
+
+**Measured on M5 Pro (5.5 s `sample.wav`), vs the FP16 baseline:**
+
+| Mode | `.aimodel` size | Peak RAM | Transcript |
+|---|---|---|---|
+| FP16 (default) | 2.3 GB | ~5.0 GB | ✅ |
+| `--quantize int8` (graph) | **619 MB (3.7×)** | ~5.0 GB | ✅ |
+| `--quantize int8-mmap` (eager) | 619 MB (+584 MB redundant) | ~5.0 GB | ✅ |
+
+**Key finding: quantization cuts on-disk size ~3.7× (matching FluidAudio's Int8
+~584 MB) with no accuracy loss — but does NOT reduce runtime RAM.** Core AI
+specializes the `.aimodel` to float weights at load, so RSS stays ~5 GB regardless
+of int8 storage; the `int8-mmap` path doesn't help because `coreai_torch` bakes the
+weights into the self-contained `.aimodel` (the mmap safetensors are redundant).
+FluidAudio's ~80 MB RSS comes from CoreML mmap'ing int8 weights at runtime — not
+reproducible through the Core AI `.aimodel` + Swift runtime as it stands.
+
+Caveat: this convert pipeline predates the out-of-repo `preprocess_audio` baking,
+so the int8 models run only via the streaming `feed()` path (`--streaming`).

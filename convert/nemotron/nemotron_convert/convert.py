@@ -51,12 +51,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--quantize",
-        choices=["none", "int8"],
+        choices=["none", "int8", "int8-mmap"],
         default="none",
         help=(
             "Encoder weight quantization (PLAN.md §3 Step 5b). 'int8' applies "
-            "coreai_opt's INT8 weight-only preset to the encoder (the bulk of the "
-            "model); prediction LSTM + joiner stay FP16. Default 'none'."
+            "coreai_opt's INT8 weight-only preset (graph mode); 'int8-mmap' uses "
+            "eager mode + mmap_dir (int8 weights serialized to safetensors, "
+            "mmap-backed). Prediction LSTM + joiner stay FP16. Default 'none'."
         ),
     )
     args = parser.parse_args(argv)
@@ -66,13 +67,41 @@ def main(argv: list[str] | None = None) -> int:
     # Build the INT8 weight-only quantizer BEFORE importing NeMo (coreai_opt's
     # pydantic models resolve cleanly only in a NeMo-free import state). Use the
     # official `QuantizerConfig.presets.w8()` recipe — data-free, weight-only,
-    # graph mode, op key 'weight' — NOT a hand-rolled config. See
-    # apple/coreai-optimization + WWDC26 session 325.
+    # op key 'weight'. See apple/coreai-optimization + WWDC26 session 325.
     quantize_encoder = None
-    if args.quantize == "int8":
-        from coreai_opt.quantization import Quantizer, QuantizerConfig
+    if args.quantize in ("int8", "int8-mmap"):
+        from coreai_opt.quantization import ExecutionMode, Quantizer, QuantizerConfig
 
-        qcfg = QuantizerConfig.presets.w8()
+        mmap_dir = None
+        if args.quantize == "int8-mmap":
+            # mmap_dir requires eager mode, which also quantizes conv ops — they
+            # need an explicit per-channel axis (axis=0 = output channels) that
+            # the graph-mode preset resolves automatically but eager does not.
+            from coreai_opt.quantization import (
+                ModuleQuantizerConfig,
+                QuantizationSpec,
+            )
+            from coreai_opt.quantization.spec.granularity import PerChannelGranularity
+
+            wspec = QuantizationSpec(
+                dtype=torch.int8, granularity=PerChannelGranularity(axis=0)
+            )
+            mqc = ModuleQuantizerConfig(
+                op_input_spec=None,
+                op_output_spec=None,
+                op_state_spec={"weight": wspec},
+                op_type_config=None,
+                op_name_config=None,
+                module_input_spec=None,
+                module_output_spec=None,
+                module_state_spec=None,
+                qat_schedule=None,
+            )
+            qcfg = QuantizerConfig(global_config=mqc, execution_mode=ExecutionMode.EAGER)
+            mmap_dir = output_path.parent / f"{output_path.name}.weights"
+            mmap_dir.mkdir(parents=True, exist_ok=True)
+        else:
+            qcfg = QuantizerConfig.presets.w8()
 
         def quantize_encoder(enc):
             # Match export_encoder's fixed-shape example inputs (T=128).
@@ -80,7 +109,7 @@ def main(argv: list[str] | None = None) -> int:
             example_length = torch.tensor([128], dtype=torch.int32)
             q = Quantizer(enc, qcfg)
             q.prepare(example_inputs=(example_mel, example_length))
-            return q.finalize()
+            return q.finalize(mmap_dir=str(mmap_dir)) if mmap_dir else q.finalize()
 
     # Step (a): pull the raw nn.Modules out of the NeMo ASRModel.
     modules = extract_modules_from_nemo(args.model_id)
