@@ -51,13 +51,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--quantize",
-        choices=["none", "int8", "int8-mmap"],
+        choices=["none", "int8", "int8-mmap", "palette4", "palette6"],
         default="none",
         help=(
-            "Encoder weight quantization (PLAN.md §3 Step 5b). 'int8' applies "
-            "coreai_opt's INT8 weight-only preset (graph mode); 'int8-mmap' uses "
-            "eager mode + mmap_dir (int8 weights serialized to safetensors, "
-            "mmap-backed). Prediction LSTM + joiner stay FP16. Default 'none'."
+            "Encoder weight compression (PLAN.md §3 Step 5b). 'int8'/'int8-mmap' = "
+            "INT8 linear weight-only (disk/bandwidth). 'palette4'/'palette6' = "
+            "4/6-bit k-means palettization — the format Apple documents as the "
+            "Neural Engine's runtime-memory + latency win (kept compressed, "
+            "decompressed just-in-time). Prediction LSTM + joiner stay FP16."
         ),
     )
     args = parser.parse_args(argv)
@@ -110,6 +111,25 @@ def main(argv: list[str] | None = None) -> int:
             q = Quantizer(enc, qcfg)
             q.prepare(example_inputs=(example_mel, example_length))
             return q.finalize(mmap_dir=str(mmap_dir)) if mmap_dir else q.finalize()
+
+    elif args.quantize in ("palette4", "palette6"):
+        # K-means weight palettization (4/6-bit LUT). Apple's docs flag this as
+        # the Neural Engine's runtime-memory format (weights stay low-bit,
+        # converted on the fly layer-to-layer).
+        from coreai_opt.palettization import KMeansPalettizer, KMeansPalettizerConfig
+
+        _preset = {
+            "palette4": KMeansPalettizerConfig.presets.w4,
+            "palette6": KMeansPalettizerConfig.presets.w6,
+        }[args.quantize]
+        pcfg = _preset()
+
+        def quantize_encoder(enc):
+            example_mel = torch.zeros(1, 128, 128, dtype=torch.float32)
+            example_length = torch.tensor([128], dtype=torch.int32)
+            p = KMeansPalettizer(enc, pcfg)
+            p.prepare(example_inputs=(example_mel, example_length))
+            return p.finalize()
 
     # Step (a): pull the raw nn.Modules out of the NeMo ASRModel.
     modules = extract_modules_from_nemo(args.model_id)

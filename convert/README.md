@@ -29,28 +29,36 @@ Swift side adds a matching `Voixful<Model>` backend conforming to `Transcribing`
 Nothing here is shared across models, so a new model's heavy/odd deps never leak
 into the others.
 
-## Quantization (INT8 encoder)
+## Encoder compression — `--quantize`
 
-`nemotron/.../convert.py --quantize int8` applies `coreai_opt`'s INT8 weight-only
-preset (`QuantizerConfig.presets.w8()`) to the encoder. Requires `coreai_opt` with
-the `presets` API and **`pydantic<2.10`** (the `>=2.0` default pulls a 2.14 alpha
-that breaks coreai_opt's config models).
+`convert.py` can compress the encoder via `coreai_opt`. Requires the `presets`
+API and **`pydantic<2.10`** (the `>=2.0` default pulls a 2.14 alpha that breaks
+coreai_opt's config models).
 
-**Measured on M5 Pro (5.5 s `sample.wav`), vs the FP16 baseline:**
+- `int8` / `int8-mmap` — INT8 **linear** weight-only (`QuantizerConfig.presets.w8()`).
+- `palette4` / `palette6` — 4/6-bit **k-means palettization** (`KMeansPalettizerConfig.presets.w4/.w6`).
 
-| Mode | `.aimodel` size | Peak RAM | Transcript |
-|---|---|---|---|
-| FP16 (default) | 2.3 GB | ~5.0 GB | ✅ |
-| `--quantize int8` (graph) | **619 MB (3.7×)** | ~5.0 GB | ✅ |
-| `--quantize int8-mmap` (eager) | 619 MB (+584 MB redundant) | ~5.0 GB | ✅ |
+**Measured on M5 Pro (5.5 s `sample.wav`, streaming), vs the FP16 baseline:**
 
-**Key finding: quantization cuts on-disk size ~3.7× (matching FluidAudio's Int8
-~584 MB) with no accuracy loss — but does NOT reduce runtime RAM.** Core AI
-specializes the `.aimodel` to float weights at load, so RSS stays ~5 GB regardless
-of int8 storage; the `int8-mmap` path doesn't help because `coreai_torch` bakes the
-weights into the self-contained `.aimodel` (the mmap safetensors are redundant).
-FluidAudio's ~80 MB RSS comes from CoreML mmap'ing int8 weights at runtime — not
-reproducible through the Core AI `.aimodel` + Swift runtime as it stands.
+| Mode | `.aimodel` size | Runtime RAM | Speed | Transcript |
+|---|---|---|---|---|
+| FP16 (default) | 2.3 GB | 4.63 GB | 0.62 s | ✅ |
+| `int8` (linear) | 619 MB (3.7×) | 4.63 GB | 0.67 s | ✅ |
+| **`palette4` (4-bit)** | **328 MB (7×)** | **0.66 GB (7×)** | **0.37 s (1.7×)** | ✅ |
+
+**Key finding: the compression *type* is everything.**
+- **Linear INT8** cuts disk only — runtime RAM is unchanged, because Core AI
+  specializes the `.aimodel` to float weights at load (W8A16 dequantizes for the
+  FP16 matmuls). Storage/bandwidth win, not a memory win.
+- **Palettization** is the Neural-Engine-resident format: weights stay low-bit in
+  memory and are decompressed just-in-time per layer (Apple's documented ANE
+  path). Core AI honors it — so we get **7× less RAM and 1.7× faster**, not just
+  smaller disk. This is the right lever for the FluidAudio-class memory footprint.
+
+So Core AI is **not** worse than Core ML here — int8 was simply the wrong format;
+palettization gets the runtime win on the same silicon.
 
 Caveat: this convert pipeline predates the out-of-repo `preprocess_audio` baking,
-so the int8 models run only via the streaming `feed()` path (`--streaming`).
+so these compressed models run only via the streaming `feed()` path (`--streaming`)
+— the batch `transcribe()` path needs the baked preprocessor. The existing Swift
+runtime loads + runs the palettized `.aimodel` as-is (no separate code needed).
