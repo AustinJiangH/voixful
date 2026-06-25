@@ -35,10 +35,10 @@ check() {  # name, output, expected-substring (case-insensitive)
 echo "voixful backend verification (models: $Q)"
 
 check "languages"          "$($BIN languages 2>&1 | tr '\n' ' ')" "en-US"
-check "nemotron streaming" "$($BIN transcribe "$WAV" --model "$Q/nemotron-palette4.aimodel" --streaming 2>&1)" "fox"
-check "nemotron json"      "$($BIN transcribe "$WAV" --model "$Q/nemotron-palette4.aimodel" --streaming --format json 2>&1)" "text"
-check "parakeet"           "$($BIN parakeet   "$WAV" --model "$Q/parakeet-palette4.aimodel" --pieces "$Q/parakeet-pieces.txt" 2>&1)" "quick brown fox"
-check "cohere"             "$($BIN cohere     "$WAV" --model "$Q/cohere-palette4.aimodel"   --pieces "$Q/cohere-pieces.txt"   2>&1)" "quick brown fox"
+check "nemotron streaming" "$($BIN transcribe "$WAV" --model "$Q/nemotron-palette4.aimodel" --backend nemotron --streaming 2>&1)" "fox"
+check "nemotron json"      "$($BIN transcribe "$WAV" --model "$Q/nemotron-palette4.aimodel" --backend nemotron --streaming --format json 2>&1)" "text"
+check "parakeet"           "$($BIN transcribe "$WAV" --model "$Q/parakeet-palette4.aimodel" --backend parakeet --pieces "$Q/parakeet-pieces.txt" 2>&1)" "quick brown fox"
+check "cohere"             "$($BIN transcribe "$WAV" --model "$Q/cohere-palette4.aimodel"   --backend cohere   --pieces "$Q/cohere-pieces.txt"   2>&1)" "quick brown fox"
 
 echo ""
 echo "TOTAL: $pass passed, $fail failed"

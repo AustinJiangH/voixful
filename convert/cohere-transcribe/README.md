@@ -1,4 +1,4 @@
-# convert/cohere — Cohere Transcribe 2B → Core AI `.aimodel`
+# convert/cohere-transcribe — Cohere Transcribe 2B → Core AI `.aimodel`
 
 Converts **Cohere Transcribe** (`CohereLabs/cohere-transcribe-03-2026`) into a Core AI
 `.aimodel`. This is Voixful's first **attention encoder-decoder (AED)** backend —
@@ -66,7 +66,7 @@ the same way the Nemotron / Parakeet pipelines do. The decoder is small (~0.3 GB
 (`encode` + `decode_step`), and `NemotronASR.CohereEngine` runs it on-device:
 
 ```sh
-voixful cohere clip.wav --model cohere-palette4.aimodel --pieces cohere-pieces.txt
+voixful transcribe clip.wav --model cohere-palette4.aimodel --backend cohere --pieces cohere-pieces.txt
 ```
 
 FP16 and palette4 both produce torch-identical transcripts; palettizing the encoder

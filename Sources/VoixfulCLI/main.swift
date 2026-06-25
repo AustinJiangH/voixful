@@ -12,168 +12,24 @@ import Foundation
 import VoixfulSpeech
 import VoixfulTUI
 import VoixfulNemotron
-import VoixfulEngine
+import VoixfulParakeet
+import VoixfulCohereTranscribe
 
 @main
 struct Voixful: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "voixful",
         abstract: "Voixful on-device speech — a SpeechAnalyzer-shaped API over local models.",
-        subcommands: [Transcribe.self, Mic.self, Parakeet.self, Cohere.self, Languages.self]
+        subcommands: [Transcribe.self, Mic.self, Languages.self]
     )
-}
-
-// MARK: - cohere (attention encoder-decoder backend)
-
-struct Cohere: AsyncParsableCommand {
-    static let configuration = CommandConfiguration(
-        abstract: "Transcribe a file with Cohere Transcribe 2B (attention encoder-decoder)."
-    )
-
-    @Argument(help: "Input audio file (WAV/CAF/AIFF/… — any rate/format).")
-    var input: String
-
-    @Option(help: "Path to the Cohere .aimodel directory.")
-    var model: String
-
-    @Option(help: "Path to the Cohere SentencePiece vocab (one piece per line).")
-    var pieces: String
-
-    @Option(help: "Write the transcript here (default: stdout).")
-    var output: String?
-
-    @Option(help: "Warm-benchmark: load once, transcribe N times, report steady-state inference ms.")
-    var bench: Int?
-
-    func run() async throws {
-        let samples = try loadMono16k(path: input)
-        let engine: CohereEngine
-        do {
-            engine = try await CohereEngine(
-                modelURL: URL(fileURLWithPath: model),
-                piecesURL: URL(fileURLWithPath: pieces)
-            )
-        } catch {
-            throw ValidationError("could not load Cohere engine: \(error)")
-        }
-
-        if let bench, bench > 0 {
-            let audioSeconds = Double(samples.count) / 16_000.0
-            _ = try await engine.transcribe(audio: samples)   // warm
-            var times: [Double] = []
-            for _ in 0..<bench {
-                let t0 = DispatchTime.now().uptimeNanoseconds
-                _ = try await engine.transcribe(audio: samples)
-                times.append(Double(DispatchTime.now().uptimeNanoseconds - t0) / 1e9)
-            }
-            let med = times.sorted()[times.count / 2]
-            FileHandle.standardError.write(Data(String(
-                format: "bench n=%d audio=%.2fs | inference median=%.1fms | RTFx=%.1fx\n",
-                bench, audioSeconds, med * 1000, audioSeconds / med
-            ).utf8))
-            return
-        }
-
-        let text = try await engine.transcribe(audio: samples)
-        if let output {
-            try text.write(toFile: output, atomically: true, encoding: .utf8)
-        } else {
-            print(text)
-        }
-    }
-}
-
-// MARK: - parakeet (full-context TDT backend — FluidAudio comparison)
-
-struct Parakeet: AsyncParsableCommand {
-    static let configuration = CommandConfiguration(
-        abstract: "Transcribe a file with the full-context Parakeet TDT 0.6B model."
-    )
-
-    @Argument(help: "Input audio file (WAV/CAF/AIFF/… — any rate/format).")
-    var input: String
-
-    @Option(help: "Path to the Parakeet .aimodel directory.")
-    var model: String
-
-    @Option(help: "Path to the Parakeet SentencePiece vocab (one piece per line).")
-    var pieces: String
-
-    @Option(help: "Write the transcript here (default: stdout).")
-    var output: String?
-
-    func run() async throws {
-        let samples = try loadMono16k(path: input)
-
-        let engine: ParakeetEngine
-        do {
-            engine = try await ParakeetEngine(
-                modelURL: URL(fileURLWithPath: model),
-                piecesURL: URL(fileURLWithPath: pieces)
-            )
-        } catch {
-            throw ValidationError("could not load Parakeet engine: \(error)")
-        }
-
-        let text = try await engine.transcribe(audio: samples)
-        if let output {
-            try text.write(toFile: output, atomically: true, encoding: .utf8)
-        } else {
-            print(text)
-        }
-    }
-}
-
-/// Decode any audio file to 16 kHz mono Float samples for the engine.
-/// Shared by the `parakeet` and `cohere` subcommands.
-private func loadMono16k(path: String) throws -> [Float] {
-        let file = try AVAudioFile(forReading: URL(fileURLWithPath: path))
-        guard let target = AVAudioFormat(
-            commonFormat: .pcmFormatFloat32,
-            sampleRate: 16_000,
-            channels: 1,
-            interleaved: false
-        ) else {
-            throw ValidationError("could not build 16 kHz mono format")
-        }
-        guard let converter = AVAudioConverter(from: file.processingFormat, to: target) else {
-            throw ValidationError("could not build audio converter for \(path)")
-        }
-
-        guard let inBuf = AVAudioPCMBuffer(
-            pcmFormat: file.processingFormat,
-            frameCapacity: AVAudioFrameCount(file.length)
-        ) else {
-            throw ValidationError("could not allocate input buffer for \(path)")
-        }
-        try file.read(into: inBuf)
-
-        let ratio = target.sampleRate / file.processingFormat.sampleRate
-        let outCapacity = AVAudioFrameCount(Double(inBuf.frameLength) * ratio) + 1024
-        guard let outBuf = AVAudioPCMBuffer(pcmFormat: target, frameCapacity: outCapacity) else {
-            throw ValidationError("could not allocate output buffer for \(path)")
-        }
-
-        var fed = false
-        var error: NSError?
-        let status = converter.convert(to: outBuf, error: &error) { _, inputStatus in
-            if fed {
-                inputStatus.pointee = .noDataNow
-                return nil
-            }
-            fed = true
-            inputStatus.pointee = .haveData
-            return inBuf
-        }
-        if let error { throw ValidationError("resample failed: \(error)") }
-        if status == .error { throw ValidationError("resample returned .error") }
-
-        let n = Int(outBuf.frameLength)
-        guard let ch = outBuf.floatChannelData else { return [] }
-        return Array(UnsafeBufferPointer(start: ch[0], count: n))
 }
 
 // MARK: - transcribe
+
+/// Which model backend `transcribe` should drive (DESIGN_ANALYZER_API.md §4).
+enum Backend: String, ExpressibleByArgument, CaseIterable {
+    case nemotron, parakeet, cohere
+}
 
 struct Transcribe: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
@@ -186,35 +42,49 @@ struct Transcribe: AsyncParsableCommand {
     @Option(help: "Path to the .aimodel directory.")
     var model: String
 
+    @Option(help: "Model architecture / backend: nemotron, parakeet, or cohere.")
+    var backend: Backend = .nemotron
+
+    @Option(help: "SentencePiece vocab for parakeet/cohere. Default: sibling 'pieces.txt' of the model.")
+    var pieces: String?
+
     @Option(help: "Write the transcript here (default: stdout).")
     var output: String?
 
     @Option(name: .shortAndLong, help: "BCP-47 locale, e.g. en-US.")
     var language: String = "en-US"
 
-    @Option(help: "Streaming chunk size in ms (80, 160, 320, 560, 1120).")
+    @Option(help: "Nemotron streaming chunk size in ms (80, 160, 320, 560, 1120).")
     var chunk: Int = 320
 
     @Option(help: "Output format: text or json.")
     var format: String = "text"
 
-    @Flag(help: "Use the incremental streaming feed() path instead of batch transcribe.")
+    @Flag(help: "Nemotron: use the incremental streaming feed() path instead of batch.")
     var streaming: Bool = false
 
     func run() async throws {
-        // Build the brand surface — identical in shape to Apple's SpeechAnalyzer.
-        let transcriber: NemotronTranscriber
+        // Build the brand surface — every backend is a `Transcribing` module
+        // driven through the same `VoixfulAnalyzer` (DESIGN_ANALYZER_API.md §4).
+        let modelURL = URL(fileURLWithPath: model)
+        let locale = Locale(identifier: language)
+        let transcriber: any Transcribing
         do {
-            transcriber = try NemotronTranscriber(
-                modelURL: URL(fileURLWithPath: model),
-                locale: Locale(identifier: language),
-                chunkSizeMS: chunk,
-                mode: streaming ? .streaming : .batch,
-                reportingOptions: [],
-                attributeOptions: [.audioTimeRange]
-            )
+            switch backend {
+            case .nemotron:
+                transcriber = try NemotronTranscriber(
+                    modelURL: modelURL, locale: locale, chunkSizeMS: chunk,
+                    mode: streaming ? .streaming : .batch,
+                    reportingOptions: [], attributeOptions: [.audioTimeRange])
+            case .parakeet:
+                transcriber = ParakeetTranscriber(
+                    modelURL: modelURL, piecesURL: piecesURL(modelURL), locale: locale)
+            case .cohere:
+                transcriber = CohereTranscriber(
+                    modelURL: modelURL, piecesURL: piecesURL(modelURL), locale: locale)
+            }
         } catch {
-            throw ValidationError("could not create transcriber: \(error)")
+            throw ValidationError("could not create \(backend.rawValue) transcriber: \(error)")
         }
         let analyzer = VoixfulAnalyzer(modules: [transcriber])
 
@@ -246,6 +116,13 @@ struct Transcribe: AsyncParsableCommand {
         } else {
             print(rendered)
         }
+    }
+
+    /// `--pieces` if given, else a sibling `pieces.txt` of the model dir
+    /// (parakeet/cohere only; Nemotron resolves its own sibling internally).
+    private func piecesURL(_ modelURL: URL) -> URL {
+        if let pieces { return URL(fileURLWithPath: pieces) }
+        return modelURL.deletingLastPathComponent().appendingPathComponent("pieces.txt")
     }
 
     /// Load an audio file into a single PCM buffer at its native format.

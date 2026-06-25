@@ -1,13 +1,13 @@
-// VoixfulNemotron — AVAudioPCMBuffer → [Float] 16 kHz mono.
+// VoixfulSpeech — AVAudioPCMBuffer → [Float] 16 kHz mono.
 //
 // Centralizes the format conversion that previously lived (twice) in the CLI
 // and the SwiftUI demo. Used only inside `NemotronTranscriber`'s actor
 // isolation, so it carries mutable converter state without needing Sendable.
 
 import AVFoundation
-import VoixfulSpeech
 
-final class AudioInputConverter {
+
+public final class AudioInputConverter {
     /// The format `StreamingASR.feed`/`transcribe` requires.
     private static let target = AVAudioFormat(
         commonFormat: .pcmFormatFloat32,
@@ -22,7 +22,9 @@ final class AudioInputConverter {
     /// Convert one buffer to 16 kHz mono `Float`. Fast-paths buffers that are
     /// already in the target format; otherwise builds (and caches) an
     /// `AVAudioConverter` for the incoming format.
-    func convert(_ buffer: AVAudioPCMBuffer) throws -> [Float] {
+    public init() {}
+
+    public func convert(_ buffer: AVAudioPCMBuffer) throws -> [Float] {
         // CRITICAL: down-mix multichannel input to mono BEFORE the rate
         // converter. `AVAudioConverter` cannot mix a *discrete* N-channel layout
         // (e.g. the MacBook Pro mic array's 3-channel discrete format) down to

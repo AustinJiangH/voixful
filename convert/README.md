@@ -15,7 +15,7 @@ convert/
 ├── parakeet/                 ← Parakeet TDT 0.6B (TDT, full-context)
 │   ├── pyproject.toml · README.md
 │   └── parakeet_convert/     ← convert.py / extract.py / export.py / models.py
-└── cohere/                   ← Cohere Transcribe 2B (attention encoder-decoder)
+└── cohere-transcribe/                   ← Cohere Transcribe 2B (attention encoder-decoder)
     ├── pyproject.toml · README.md   ← gated model — authenticate first (see README)
     └── cohere_convert/       ← convert.py / extract.py / export.py / models.py
 ```

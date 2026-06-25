@@ -15,8 +15,10 @@ let package = Package(
         .library(name: "VoixfulSpeech", targets: ["VoixfulSpeech"]),
         // Model-agnostic live terminal UI (mic session) — shared by every backend's CLI.
         .library(name: "VoixfulTUI", targets: ["VoixfulTUI"]),
-        // Nemotron backend — one model behind the brand surface.
+        // Per-model backends — each a `Transcribing` conformer behind the façade.
         .library(name: "VoixfulNemotron", targets: ["VoixfulNemotron"]),
+        .library(name: "VoixfulParakeet", targets: ["VoixfulParakeet"]),
+        .library(name: "VoixfulCohereTranscribe", targets: ["VoixfulCohereTranscribe"]),
         // Brand CLI: `voixful transcribe …`.
         .executable(name: "voixful", targets: ["VoixfulCLI"]),
 
@@ -40,9 +42,17 @@ let package = Package(
             dependencies: ["VoixfulSpeech"]
         ),
 
-        // MARK: Nemotron backend (depends on core + the engine)
+        // MARK: Per-model backends (each: core façade + the engine)
         .target(
             name: "VoixfulNemotron",
+            dependencies: ["VoixfulSpeech", "VoixfulEngine"]
+        ),
+        .target(
+            name: "VoixfulParakeet",
+            dependencies: ["VoixfulSpeech", "VoixfulEngine"]
+        ),
+        .target(
+            name: "VoixfulCohereTranscribe",
             dependencies: ["VoixfulSpeech", "VoixfulEngine"]
         ),
 
@@ -53,6 +63,8 @@ let package = Package(
                 "VoixfulSpeech",
                 "VoixfulTUI",
                 "VoixfulNemotron",
+                "VoixfulParakeet",
+                "VoixfulCohereTranscribe",
                 "VoixfulEngine",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ],
