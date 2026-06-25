@@ -19,6 +19,15 @@ public actor MelExtractor {
     public let fmin: Float
     public let fmax: Float
 
+    /// Per-frame start offset (samples) added inside `extract`. `torch.stft`
+    /// with `win_length < n_fft` and `center=True` places the `windowSize` Hann
+    /// CENTERED in the `fftSize` frame — i.e. the window centre sits at the
+    /// frame's nominal time. Left-aligning the window (offset 0) shifts every
+    /// frame earlier by `(fftSize - windowSize)/2` samples. The streaming
+    /// Nemotron path uses 0 (its existing, verified behaviour); the full-context
+    /// Parakeet path passes `(fftSize - windowSize)/2` to match torch exactly.
+    public let frameStartOffset: Int
+
     // MARK: - Precomputed state (built once at init)
 
     /// Real FFT setup; radix-2, length == fftSize. Destroyed in `close()`.
@@ -60,8 +69,10 @@ public actor MelExtractor {
         hopSize: Int = 160,
         fftSize: Int = 512,
         fmin: Float = 0,
-        fmax: Float = 8_000
+        fmax: Float = 8_000,
+        frameStartOffset: Int = 0
     ) {
+        self.frameStartOffset = frameStartOffset
         precondition(fftSize >= windowSize, "fftSize must be >= windowSize")
         precondition(fftSize.nonzeroBitCount == 1, "fftSize must be a power of two for vDSP radix-2")
 
@@ -152,12 +163,12 @@ public actor MelExtractor {
         // length N. Equivalent to (N + hop - 1) / hop. Using floor division on
         // the padded length gives the same answer for our hop=160 / win=400 /
         // pad=256 setup.
-        let nFrames = (prepared.count - windowSize) / hopSize + 1
+        let nFrames = (prepared.count - windowSize - frameStartOffset) / hopSize + 1
         var out = [Float](repeating: 0, count: nMels * nFrames)
         var frame = [Float](repeating: 0, count: nMels)
 
         for t in 0..<nFrames {
-            let start = t * hopSize
+            let start = t * hopSize + frameStartOffset
             let end = start + windowSize
             runFrame(samples: prepared, start: start, end: end, into: &frame)
             for m in 0..<nMels {

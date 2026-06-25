@@ -12,7 +12,7 @@ convert/
 ├── nemotron/                 ← Nemotron 3.5 ASR Streaming 0.6B (RNN-T, streaming)
 │   ├── pyproject.toml · README.md
 │   └── nemotron_convert/     ← convert.py / extract.py / export.py / models.py / …
-└── parakeet/                 ← Parakeet TDT 0.6B (TDT, full-context) — vs FluidAudio
+└── parakeet/                 ← Parakeet TDT 0.6B (TDT, full-context)
     ├── pyproject.toml · README.md
     └── parakeet_convert/     ← convert.py / extract.py / export.py / models.py
 ```
@@ -49,13 +49,12 @@ coreai_opt's config models).
 - **Linear INT8** cuts disk only — runtime RAM is unchanged, because Core AI
   specializes the `.aimodel` to float weights at load (W8A16 dequantizes for the
   FP16 matmuls). Storage/bandwidth win, not a memory win.
-- **Palettization** is the Neural-Engine-resident format: weights stay low-bit in
-  memory and are decompressed just-in-time per layer (Apple's documented ANE
-  path). Core AI honors it — so we get **7× less RAM and 1.7× faster**, not just
-  smaller disk. This is the right lever for the FluidAudio-class memory footprint.
+- **Palettization** keeps weights low-bit *in memory* and decompresses them
+  just-in-time per layer, so we get **7× less RAM and 1.7× faster**, not just
+  smaller disk. This is the lever to use for a memory-constrained deployment.
 
-So Core AI is **not** worse than Core ML here — int8 was simply the wrong format;
-palettization gets the runtime win on the same silicon.
+So for compression, palettization — not linear int8 — is the format that wins at
+runtime, not only on disk.
 
 Caveat: this convert pipeline predates the out-of-repo `preprocess_audio` baking,
 so these compressed models run only via the streaming `feed()` path (`--streaming`)

@@ -12,14 +12,104 @@ import Foundation
 import VoixfulSpeech
 import VoixfulTUI
 import VoixfulNemotron
+import NemotronASR
 
 @main
 struct Voixful: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "voixful",
         abstract: "Voixful on-device speech — a SpeechAnalyzer-shaped API over local models.",
-        subcommands: [Transcribe.self, Mic.self, Languages.self]
+        subcommands: [Transcribe.self, Mic.self, Parakeet.self, Languages.self]
     )
+}
+
+// MARK: - parakeet (full-context TDT backend — FluidAudio comparison)
+
+struct Parakeet: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        abstract: "Transcribe a file with the full-context Parakeet TDT 0.6B model."
+    )
+
+    @Argument(help: "Input audio file (WAV/CAF/AIFF/… — any rate/format).")
+    var input: String
+
+    @Option(help: "Path to the Parakeet .aimodel directory.")
+    var model: String
+
+    @Option(help: "Path to the Parakeet SentencePiece vocab (one piece per line).")
+    var pieces: String
+
+    @Option(help: "Write the transcript here (default: stdout).")
+    var output: String?
+
+    func run() async throws {
+        let samples = try loadMono16k(path: input)
+
+        let engine: ParakeetEngine
+        do {
+            engine = try await ParakeetEngine(
+                modelURL: URL(fileURLWithPath: model),
+                piecesURL: URL(fileURLWithPath: pieces)
+            )
+        } catch {
+            throw ValidationError("could not load Parakeet engine: \(error)")
+        }
+
+        let text = try await engine.transcribe(audio: samples)
+        if let output {
+            try text.write(toFile: output, atomically: true, encoding: .utf8)
+        } else {
+            print(text)
+        }
+    }
+
+    /// Decode any audio file to 16 kHz mono Float samples for the engine.
+    private func loadMono16k(path: String) throws -> [Float] {
+        let file = try AVAudioFile(forReading: URL(fileURLWithPath: path))
+        guard let target = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: 16_000,
+            channels: 1,
+            interleaved: false
+        ) else {
+            throw ValidationError("could not build 16 kHz mono format")
+        }
+        guard let converter = AVAudioConverter(from: file.processingFormat, to: target) else {
+            throw ValidationError("could not build audio converter for \(path)")
+        }
+
+        guard let inBuf = AVAudioPCMBuffer(
+            pcmFormat: file.processingFormat,
+            frameCapacity: AVAudioFrameCount(file.length)
+        ) else {
+            throw ValidationError("could not allocate input buffer for \(path)")
+        }
+        try file.read(into: inBuf)
+
+        let ratio = target.sampleRate / file.processingFormat.sampleRate
+        let outCapacity = AVAudioFrameCount(Double(inBuf.frameLength) * ratio) + 1024
+        guard let outBuf = AVAudioPCMBuffer(pcmFormat: target, frameCapacity: outCapacity) else {
+            throw ValidationError("could not allocate output buffer for \(path)")
+        }
+
+        var fed = false
+        var error: NSError?
+        let status = converter.convert(to: outBuf, error: &error) { _, inputStatus in
+            if fed {
+                inputStatus.pointee = .noDataNow
+                return nil
+            }
+            fed = true
+            inputStatus.pointee = .haveData
+            return inBuf
+        }
+        if let error { throw ValidationError("resample failed: \(error)") }
+        if status == .error { throw ValidationError("resample returned .error") }
+
+        let n = Int(outBuf.frameLength)
+        guard let ch = outBuf.floatChannelData else { return [] }
+        return Array(UnsafeBufferPointer(start: ch[0], count: n))
+    }
 }
 
 // MARK: - transcribe

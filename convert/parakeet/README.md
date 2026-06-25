@@ -1,7 +1,7 @@
 # convert/parakeet — Parakeet TDT 0.6B → Core AI `.aimodel`
 
-Converts NVIDIA **Parakeet TDT 0.6B** (`nvidia/parakeet-tdt-0.6b-v3` / `-v2`) — the
-model FluidAudio ships — into a Core AI `.aimodel`, for a same-model comparison.
+Converts NVIDIA **Parakeet TDT 0.6B** (`nvidia/parakeet-tdt-0.6b-v3` / `-v2`) into a
+Core AI `.aimodel` — a full-context, TDT-transducer backend for Voixful.
 
 ## How it differs from the Nemotron pipeline
 
@@ -31,21 +31,38 @@ python -m parakeet_convert.convert --quantize palette4 --output parakeet-palette
 
 ## Status / results
 
-**Conversion works** — produces a 3-function `.aimodel` (`encode`/`predict_step`/`join`).
-Measured sizes (M5 Pro):
+**Conversion + Swift runtime both work.** The converter produces a 3-function
+`.aimodel` (`encode`/`predict_step`/`join`), and `NemotronASR.ParakeetEngine` runs
+it end-to-end (full-context encode + TDT greedy decode). Drive it with:
 
-| Variant | `.aimodel` size |
-|---|---|
-| FP16 | 2.3 GB |
-| `palette4` | 364 MB (~6.3×) |
+```sh
+voixful parakeet clip.wav --model parakeet-palette4.aimodel --pieces parakeet-pieces.txt
+```
 
-**Not yet runnable in the Swift runtime.** Our `NemotronASR.StreamingASR` is built
-for the *streaming, cache-aware, RNN-T* Nemotron path. Parakeet needs:
-- a **full-context encode** driver (feed the whole padded clip once), and
-- a **TDT greedy decoder** (split token/duration logits, advance time by duration).
+Both the FP16 and `palette4` variants produce NeMo-identical transcripts; palettizing
+the encoder cuts the asset from 2.3 GB to ~364 MB with no quality loss (same lever as
+the Nemotron pipeline).
 
-That runtime work (a `VoixfulParakeet` backend) is the follow-up that unlocks
-transcripts + the RAM/RTFx/WER comparison vs FluidAudio.
+### Runtime gotchas (what the TDT path needs that the RNN-T path doesn't)
+
+The `ParakeetEngine` is a separate backend from `StreamingASR` because four things
+differ from the streaming Nemotron path — each was a real bug found bringing it up:
+
+1. **`normalize: per_feature`.** Parakeet's preprocessor standardizes each mel bin
+   to zero-mean/unit-std over the utterance (Nemotron uses `normalize: NA`). Feed
+   un-normalized mel and the encoder goes out-of-distribution → the TDT decoder
+   collapses to the prediction network's language-model prior (fluent nonsense).
+2. **`torch.stft(center=True)` window centering.** With `win_length(400) < n_fft(512)`
+   the Hann window sits **centered** in the FFT frame. Left-aligning it shifts every
+   frame `(512-400)/2 = 56` samples early — enough to wreck the acoustics. The Swift
+   `MelExtractor` now takes a `frameStartOffset` (Parakeet passes 56; Nemotron 0).
+3. **SOS seed.** NeMo seeds the predictor with `g₀ = LSTM(zero_embed, zero_state)`,
+   *not* a literal zero vector. The prediction embedding uses `padding_idx = blank`,
+   so feeding the blank token once before decoding reproduces `g₀` exactly. Without
+   it the joint emits blank through the start of the clip (lost first sentence).
+4. **TDT greedy decode.** Split the joint output into token logits `[0, 8193)` and
+   duration logits `[8193, 8198)`; argmax both; advance the encoder time index by the
+   predicted duration (0–4), not always +1, with a per-frame symbol cap of 10.
 
 ## License
 

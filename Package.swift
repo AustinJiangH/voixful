@@ -53,6 +53,7 @@ let package = Package(
                 "VoixfulSpeech",
                 "VoixfulTUI",
                 "VoixfulNemotron",
+                "NemotronASR",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ],
             // Embed an Info.plist (with NSMicrophoneUsageDescription) into the
