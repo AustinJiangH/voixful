@@ -130,11 +130,11 @@ struct Transcribe: AsyncParsableCommand {
         }
     }
 
-    /// `--pieces` if given, else a sibling `pieces.txt` of the model dir
-    /// (parakeet/cohere only; Nemotron resolves its own sibling internally).
+    /// `--pieces` if given, else `pieces.txt` bundled inside the `.aimodel` dir
+    /// (self-contained model). Parakeet/cohere only; Nemotron resolves its own.
     private func piecesURL(_ modelURL: URL) -> URL {
         if let pieces { return URL(fileURLWithPath: pieces) }
-        return modelURL.deletingLastPathComponent().appendingPathComponent("pieces.txt")
+        return modelURL.appendingPathComponent("pieces.txt")
     }
 
     /// Load an audio file into a single PCM buffer at its native format.

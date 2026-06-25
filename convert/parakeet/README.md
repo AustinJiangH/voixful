@@ -36,7 +36,7 @@ python -m parakeet_convert.convert --quantize palette4 --output parakeet-palette
 it end-to-end (full-context encode + TDT greedy decode). Drive it with:
 
 ```sh
-voixful transcribe clip.wav --model parakeet-palette4.aimodel --pieces parakeet-pieces.txt
+voixful transcribe clip.wav --model parakeet-palette4.aimodel
 ```
 
 Both the FP16 and `palette4` variants produce NeMo-identical transcripts; palettizing

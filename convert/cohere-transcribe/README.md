@@ -66,7 +66,7 @@ the same way the Nemotron / Parakeet pipelines do. The decoder is small (~0.3 GB
 (`encode` + `decode_step`), and `NemotronASR.CohereEngine` runs it on-device:
 
 ```sh
-voixful transcribe clip.wav --model cohere-palette4.aimodel --pieces cohere-pieces.txt
+voixful transcribe clip.wav --model cohere-palette4.aimodel
 ```
 
 FP16 and palette4 both produce torch-identical transcripts; palettizing the encoder

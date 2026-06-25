@@ -116,7 +116,16 @@ def main(argv: list[str] | None = None) -> int:
     ai_program = converter.to_coreai()
     ai_program.optimize()
     ai_program.save_asset(output_path)
-    print(f"Wrote {output_path} (quantize={args.quantize}, T_enc={t_enc}).")
+
+    # Bundle the SentencePiece vocab inside the .aimodel so the runtime is
+    # self-contained (the CLI reads <model>/pieces.txt; a wrong vocab errors).
+    from transformers import AutoTokenizer
+
+    tok = AutoTokenizer.from_pretrained(args.model_id, trust_remote_code=True)
+    pieces = [tok.convert_ids_to_tokens(i) for i in range(16384)]
+    (output_path / "pieces.txt").write_text("\n".join(pieces) + "\n", encoding="utf-8")
+
+    print(f"Wrote {output_path} (quantize={args.quantize}, T_enc={t_enc}) + pieces.txt ({len(pieces)}).")
     return 0
 
 

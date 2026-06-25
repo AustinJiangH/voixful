@@ -56,7 +56,14 @@ public actor ParakeetEngine {
         self.encodeFn = enc
         self.prediction = try await PredictionSession(model: model)
         self.joiner = try await JoinerSession(model: model)
-        self.tokenizer = try Tokenizer(vocabURL: piecesURL)
+        let tokenizer = try Tokenizer(vocabURL: piecesURL)
+        let pieceCount = await tokenizer.count
+        guard pieceCount == Self.vocab else {
+            throw ASRError.modelLoadFailed(
+                "vocab mismatch: \(piecesURL.lastPathComponent) has \(pieceCount) pieces, "
+                + "expected \(Self.vocab) for Parakeet — wrong --pieces / pieces.txt?")
+        }
+        self.tokenizer = tokenizer
         // Parakeet's preprocessor is `torch.stft(center=True)` with win<n_fft, so
         // center the 400-sample Hann in the 512 frame — offset (512-400)/2 = 56.
         self.melExtractor = MelExtractor(frameStartOffset: (512 - 400) / 2)

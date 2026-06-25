@@ -122,6 +122,11 @@ public actor Tokenizer {
         self.idToPiece = mapping
     }
 
+    /// Number of pieces loaded (0 in stub mode). Engines compare this to the
+    /// model's vocab so a wrong vocab fails loudly instead of detokenizing to
+    /// garbage.
+    public var count: Int { idToPiece.count }
+
     // MARK: - Decode
 
     /// Detokenize a sequence of token ids back into a `String`.

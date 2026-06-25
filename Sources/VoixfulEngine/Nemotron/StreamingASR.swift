@@ -228,10 +228,14 @@ public actor StreamingASR {
         // vocab.txt in the .nemo archive is BERT-WordPiece-style (##-prefixed)
         // and does NOT match the SP token IDs the model emits — using it
         // produces garbage like "##b".
+        // Prefer pieces.txt bundled INSIDE the .aimodel (self-contained model),
+        // then a sibling pieces.txt, then a sibling vocab.txt.
+        let fm = FileManager.default
+        let insidePieces = modelURL.appendingPathComponent("pieces.txt")
         let parentDir = modelURL.deletingLastPathComponent()
-        let piecesURL = parentDir.appendingPathComponent("pieces.txt")
-        let vocabURL = FileManager.default.fileExists(atPath: piecesURL.path)
-            ? piecesURL
+        let siblingPieces = parentDir.appendingPathComponent("pieces.txt")
+        let vocabURL = fm.fileExists(atPath: insidePieces.path) ? insidePieces
+            : fm.fileExists(atPath: siblingPieces.path) ? siblingPieces
             : parentDir.appendingPathComponent("vocab.txt")
         self.tokenizer = try Tokenizer(vocabURL: vocabURL)
 

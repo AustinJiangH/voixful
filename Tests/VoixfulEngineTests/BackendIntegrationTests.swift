@@ -78,6 +78,22 @@ final class BackendIntegrationTests: XCTestCase {
         }
     }
 
+    /// A wrong-size vocab must fail loudly (vocab mismatch), not detokenize to
+    /// garbage — load the Parakeet model with Nemotron's 1024-piece vocab.
+    func testWrongVocabRejected() async throws {
+        let dir = try modelsDir()
+        let model = dir.appendingPathComponent("parakeet-palette4.aimodel")
+        let wrongPieces = dir.appendingPathComponent("pieces.txt")   // Nemotron 1024
+        try require(model)
+        try require(wrongPieces)
+        do {
+            _ = try await ParakeetEngine(modelURL: model, piecesURL: wrongPieces)
+            XCTFail("expected a vocab-mismatch error")
+        } catch {
+            XCTAssertTrue("\(error)".contains("vocab mismatch"), "got: \(error)")
+        }
+    }
+
     func testNemotronStreamingTranscribes() async throws {
         let dir = try modelsDir()
         let model = dir.appendingPathComponent("nemotron-palette4.aimodel")

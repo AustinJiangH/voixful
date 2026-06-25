@@ -121,7 +121,13 @@ def main(argv: list[str] | None = None) -> int:
     ai_program = converter.to_coreai()
     ai_program.optimize()
     ai_program.save_asset(output_path)
-    print(f"Wrote {output_path} (quantize={args.quantize}).")
+
+    # Bundle the SentencePiece vocab inside the .aimodel so the runtime is
+    # self-contained (the CLI reads <model>/pieces.txt; a wrong vocab errors).
+    pieces = list(modules["tokenizer"].vocab)
+    (output_path / "pieces.txt").write_text("\n".join(pieces) + "\n", encoding="utf-8")
+
+    print(f"Wrote {output_path} (quantize={args.quantize}) + pieces.txt ({len(pieces)}).")
     return 0
 
 

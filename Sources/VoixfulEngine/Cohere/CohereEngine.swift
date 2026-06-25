@@ -32,6 +32,7 @@ public actor CohereEngine {
     private static let nHeads = 8
     private static let headDim = 128
     private static let maxCacheLen = 108         // max decode steps
+    private static let vocab = 16384             // SentencePiece vocab size
     private static let startToken: Int32 = 13764 // decoder_start_token_id
     private static let eosToken: Int32 = 3       // <|endoftext|>
     private static let maskNeg: Float = -1e9
@@ -59,7 +60,13 @@ public actor CohereEngine {
         }
         self.encodeFn = enc
         self.decodeFn = dec
-        self.tokenizer = try CohereTokenizer(piecesURL: piecesURL)
+        let tokenizer = try CohereTokenizer(piecesURL: piecesURL)
+        guard tokenizer.count == Self.vocab else {
+            throw ASRError.modelLoadFailed(
+                "vocab mismatch: \(piecesURL.lastPathComponent) has \(tokenizer.count) pieces, "
+                + "expected \(Self.vocab) for Cohere — wrong --pieces / pieces.txt?")
+        }
+        self.tokenizer = tokenizer
         // Cohere's preprocessor is the same NeMo per-feature / STFT-center mel as
         // Parakeet, so center the 400-sample Hann in the 512 FFT (offset 56).
         self.melExtractor = MelExtractor(frameStartOffset: (512 - 400) / 2)

@@ -13,6 +13,10 @@ import Foundation
 public struct CohereTokenizer {
     private let pieces: [String]   // index == token id
 
+    /// Number of pieces loaded. The engine checks this against the model vocab
+    /// so a wrong vocab fails loudly instead of detokenizing to garbage.
+    public var count: Int { pieces.count }
+
     public init(piecesURL: URL) throws {
         let text = try String(contentsOf: piecesURL, encoding: .utf8)
         // One piece per line, line index == id. Keep every line verbatim (pieces

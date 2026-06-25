@@ -56,6 +56,11 @@ final class CohereTests: XCTestCase {
         XCTAssertEqual(tok.decode([1, 999, -5]), " ok")
     }
 
+    /// `count` reports the loaded vocab size (engines validate it vs the model).
+    func testTokenizerCount() throws {
+        XCTAssertEqual(try tokenizer(["<unk>", "a", "b", "c"]).count, 4)
+    }
+
     // MARK: - Encoder length formula
 
     /// `encLen` mirrors the model's three stride-2 subsampling convs

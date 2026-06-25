@@ -201,6 +201,12 @@ def main(argv: list[str] | None = None) -> int:
     ai_program.optimize()
     ai_program.save_asset(output_path)
 
+    # Bundle the SentencePiece vocab inside the .aimodel so the runtime is
+    # self-contained (StreamingASR reads <model>/pieces.txt first).
+    pieces = list(modules["tokenizer"].vocab)
+    (output_path / "pieces.txt").write_text("\n".join(pieces) + "\n", encoding="utf-8")
+    print(f"Wrote {output_path}/pieces.txt ({len(pieces)} pieces) — self-contained.")
+
     print(
         f"Wrote {output_path} — a single Core AI multi-function .aimodel containing "
         f"the three named inference functions '{ENCODE_FN}', '{PREDICT_STEP_FN}', and "
