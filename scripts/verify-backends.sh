@@ -5,11 +5,11 @@
 # Usage:
 #   scripts/verify-backends.sh [MODELS_DIR]
 #
-# MODELS_DIR (default: /tmp/qwork) must contain the palette4 assets:
-#   nemotron-palette4.aimodel  + sibling pieces.txt   (Nemotron loads the vocab
-#                                                       as a sibling of the model)
-#   parakeet-palette4.aimodel  + parakeet-pieces.txt
-#   cohere-palette4.aimodel    + cohere-pieces.txt
+# MODELS_DIR (default: ~/repos/voixful-models) must contain the palette4 assets,
+# each self-contained (pieces.txt bundled inside the .aimodel dir):
+#   nemotron-speech-streaming-en-0.6b-palette4.aimodel
+#   parakeet-tdt-0.6b-v3-palette4.aimodel
+#   cohere-transcribe-03-2026-palette4.aimodel
 #
 # Builds release if needed, runs each backend on fixtures/sample.wav, and checks
 # the transcript. Exits non-zero on any failure.
@@ -17,7 +17,10 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
-Q="${1:-/tmp/qwork}"
+Q="${1:-$HOME/repos/voixful-models}"
+NEMOTRON="nemotron-speech-streaming-en-0.6b-palette4.aimodel"
+PARAKEET="parakeet-tdt-0.6b-v3-palette4.aimodel"
+COHERE="cohere-transcribe-03-2026-palette4.aimodel"
 WAV="fixtures/sample.wav"
 BIN=".build/release/voixful"
 
@@ -35,12 +38,12 @@ check() {  # name, output, expected-substring (case-insensitive)
 echo "voixful backend verification (models: $Q)"
 
 check "languages"          "$($BIN languages 2>&1 | tr '\n' ' ')" "en-US"
-check "nemotron streaming" "$($BIN transcribe "$WAV" --model "$Q/nemotron-palette4.aimodel" 2>&1)" "fox"
-check "nemotron json"      "$($BIN transcribe "$WAV" --model "$Q/nemotron-palette4.aimodel" --format json 2>&1)" "text"
-check "parakeet"           "$($BIN transcribe "$WAV" --model "$Q/parakeet-palette4.aimodel" 2>&1)" "quick brown fox"
-check "cohere"             "$($BIN transcribe "$WAV" --model "$Q/cohere-palette4.aimodel"       2>&1)" "quick brown fox"
+check "nemotron streaming" "$($BIN transcribe "$WAV" --model "$Q/$NEMOTRON" 2>&1)" "fox"
+check "nemotron json"      "$($BIN transcribe "$WAV" --model "$Q/$NEMOTRON" --format json 2>&1)" "text"
+check "parakeet"           "$($BIN transcribe "$WAV" --model "$Q/$PARAKEET" 2>&1)" "quick brown fox"
+check "cohere"             "$($BIN transcribe "$WAV" --model "$Q/$COHERE"   2>&1)" "quick brown fox"
 
 echo ""
 echo "TOTAL: $pass passed, $fail failed"
-echo "(live mic TUI: 'voixful mic --model <nemotron.aimodel>' — streaming-only, test manually)"
+echo "(live mic TUI: 'voixful mic --model <$NEMOTRON>' — streaming-only, test manually)"
 [ "$fail" -eq 0 ]

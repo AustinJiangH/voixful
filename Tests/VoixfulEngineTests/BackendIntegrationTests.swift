@@ -7,16 +7,23 @@
 //
 //   VOIXFUL_TEST_MODELS_DIR=/path/to/models swift test --filter BackendIntegration
 //
-// The dir is expected to contain (palette4 variants by default):
-//   nemotron-palette4.aimodel  + sibling pieces.txt
-//   parakeet-palette4.aimodel  + parakeet-pieces.txt
-//   cohere-palette4.aimodel    + cohere-pieces.txt
+// The dir is expected to contain the palette4 variants, each self-contained
+// (pieces.txt bundled inside the .aimodel dir):
+//   nemotron-speech-streaming-en-0.6b-palette4.aimodel
+//   parakeet-tdt-0.6b-v3-palette4.aimodel
+//   cohere-transcribe-03-2026-palette4.aimodel
 
 import AVFoundation
 import XCTest
 @testable import VoixfulEngine
 
 final class BackendIntegrationTests: XCTestCase {
+
+    // Verbose asset names (full HF model id + precision); each is self-contained
+    // with a bundled pieces.txt.
+    static let nemotron = "nemotron-speech-streaming-en-0.6b-palette4.aimodel"
+    static let parakeet = "parakeet-tdt-0.6b-v3-palette4.aimodel"
+    static let cohere = "cohere-transcribe-03-2026-palette4.aimodel"
 
     private func modelsDir() throws -> URL {
         guard let d = ProcessInfo.processInfo.environment["VOIXFUL_TEST_MODELS_DIR"], !d.isEmpty else {
@@ -67,9 +74,9 @@ final class BackendIntegrationTests: XCTestCase {
     func testBackendAutoDetection() throws {
         let dir = try modelsDir()
         for (file, expected): (String, ModelBackend) in [
-            ("nemotron-palette4.aimodel", .nemotron),
-            ("parakeet-palette4.aimodel", .parakeet),
-            ("cohere-palette4.aimodel", .cohere),
+            (Self.nemotron, .nemotron),
+            (Self.parakeet, .parakeet),
+            (Self.cohere, .cohere),
         ] {
             let url = dir.appendingPathComponent(file)
             try require(url)
@@ -82,8 +89,10 @@ final class BackendIntegrationTests: XCTestCase {
     /// garbage — load the Parakeet model with Nemotron's 1024-piece vocab.
     func testWrongVocabRejected() async throws {
         let dir = try modelsDir()
-        let model = dir.appendingPathComponent("parakeet-palette4.aimodel")
-        let wrongPieces = dir.appendingPathComponent("pieces.txt")   // Nemotron 1024
+        let model = dir.appendingPathComponent(Self.parakeet)
+        // Nemotron's 1024-piece vocab, bundled inside the Nemotron asset.
+        let wrongPieces = dir.appendingPathComponent(Self.nemotron)
+            .appendingPathComponent("pieces.txt")
         try require(model)
         try require(wrongPieces)
         do {
@@ -96,8 +105,8 @@ final class BackendIntegrationTests: XCTestCase {
 
     func testNemotronStreamingTranscribes() async throws {
         let dir = try modelsDir()
-        let model = dir.appendingPathComponent("nemotron-palette4.aimodel")
-        try require(model)   // sibling pieces.txt is resolved by NemotronStreamingEngine
+        let model = dir.appendingPathComponent(Self.nemotron)
+        try require(model)   // bundled pieces.txt is resolved by NemotronStreamingEngine
         // The streaming feed() path (Swift-computed mel) — what `voixful
         // transcribe --streaming` uses. The batch `transcribe(audio:)` needs the
         // baked `preprocess_audio`, which the convert-pipeline palette4 lacks.
@@ -111,10 +120,10 @@ final class BackendIntegrationTests: XCTestCase {
 
     func testParakeetTranscribes() async throws {
         let dir = try modelsDir()
-        let model = dir.appendingPathComponent("parakeet-palette4.aimodel")
+        let model = dir.appendingPathComponent(Self.parakeet)
         try require(model)
         let engine = try await ParakeetTDTEngine(
-            modelURL: model, piecesURL: dir.appendingPathComponent("parakeet-pieces.txt"))
+            modelURL: model, piecesURL: model.appendingPathComponent("pieces.txt"))
         let text = try await engine.transcribe(audio: sampleAudio())
         XCTAssertTrue(text.lowercased().contains("quick brown fox"),
                       "parakeet transcript: '\(text)'")
@@ -122,10 +131,10 @@ final class BackendIntegrationTests: XCTestCase {
 
     func testCohereTranscribes() async throws {
         let dir = try modelsDir()
-        let model = dir.appendingPathComponent("cohere-palette4.aimodel")
+        let model = dir.appendingPathComponent(Self.cohere)
         try require(model)
         let engine = try await CohereTranscribeEngine(
-            modelURL: model, piecesURL: dir.appendingPathComponent("cohere-pieces.txt"))
+            modelURL: model, piecesURL: model.appendingPathComponent("pieces.txt"))
         let text = try await engine.transcribe(audio: sampleAudio())
         XCTAssertTrue(text.lowercased().contains("quick brown fox"),
                       "cohere transcript: '\(text)'")
