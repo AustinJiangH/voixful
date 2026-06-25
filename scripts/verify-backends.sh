@@ -35,8 +35,8 @@ check() {  # name, output, expected-substring (case-insensitive)
 echo "voixful backend verification (models: $Q)"
 
 check "languages"          "$($BIN languages 2>&1 | tr '\n' ' ')" "en-US"
-check "nemotron streaming" "$($BIN transcribe "$WAV" --model "$Q/nemotron-palette4.aimodel" --streaming 2>&1)" "fox"
-check "nemotron json"      "$($BIN transcribe "$WAV" --model "$Q/nemotron-palette4.aimodel" --streaming --format json 2>&1)" "text"
+check "nemotron streaming" "$($BIN transcribe "$WAV" --model "$Q/nemotron-palette4.aimodel" 2>&1)" "fox"
+check "nemotron json"      "$($BIN transcribe "$WAV" --model "$Q/nemotron-palette4.aimodel" --format json 2>&1)" "text"
 check "parakeet"           "$($BIN transcribe "$WAV" --model "$Q/parakeet-palette4.aimodel" 2>&1)" "quick brown fox"
 check "cohere"             "$($BIN transcribe "$WAV" --model "$Q/cohere-palette4.aimodel"       2>&1)" "quick brown fox"
 

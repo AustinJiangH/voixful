@@ -61,32 +61,35 @@ struct Transcribe: AsyncParsableCommand {
     @Option(help: "Output format: text or json.")
     var format: String = "text"
 
-    @Flag(help: "Nemotron: use the incremental streaming feed() path instead of batch.")
-    var streaming: Bool = false
-
     func run() async throws {
         // Build the brand surface — every backend is a `Transcribing` module
         // driven through the same `VoixfulAnalyzer` (DESIGN_ANALYZER_API.md §4).
         let modelURL = URL(fileURLWithPath: model)
         let locale = Locale(identifier: language)
 
-        // Auto-detect the architecture from the model's functions unless the
-        // caller forces it with --backend.
+        // Read the model's functions once: drives both backend auto-detection
+        // (unless --backend forces it) and the Nemotron batch-vs-streaming mode.
+        let fns = try ModelBackend.assetFunctions(modelURL: modelURL)
         let resolved: Backend
         if let backend {
             resolved = backend
+        } else if fns.names.contains("decode_step") {
+            resolved = .cohere
+        } else if fns.encodeHasStates {
+            resolved = .nemotron
         } else {
-            let detected = try ModelBackend.detect(modelURL: modelURL)
-            resolved = Backend(rawValue: detected.rawValue) ?? .nemotron
+            resolved = .parakeet
         }
 
         let transcriber: any Transcribing
         do {
             switch resolved {
             case .nemotron:
+                // Batch needs the baked `preprocess_audio`; without it (every
+                // convert-pipeline model), stream. No user flag required.
                 transcriber = try NemotronTranscriber(
                     modelURL: modelURL, locale: locale, chunkSizeMS: chunk,
-                    mode: streaming ? .streaming : .batch,
+                    mode: fns.names.contains("preprocess_audio") ? .batch : .streaming,
                     reportingOptions: [], attributeOptions: [.audioTimeRange])
             case .parakeet:
                 transcriber = ParakeetTranscriber(

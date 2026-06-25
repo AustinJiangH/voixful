@@ -18,17 +18,31 @@ public enum ModelBackend: String, Sendable, CaseIterable {
 }
 
 extension ModelBackend {
-    /// Classify the asset by its function signatures (reads metadata only).
-    public static func detect(modelURL: URL) throws -> ModelBackend {
+    /// The function names + their state names, read from the on-disk asset
+    /// summary (metadata only — no specialization).
+    public struct AssetFunctions: Sendable {
+        public let names: Set<String>
+        /// Whether `encode` carries cache states (streaming, cache-aware).
+        public let encodeHasStates: Bool
+    }
+
+    public static func assetFunctions(modelURL: URL) throws -> AssetFunctions {
         let asset = try AIModelAsset(contentsOf: modelURL)
         guard let summary = try asset.summary(includingStatistics: false) else {
             throw ASRError.modelLoadFailed("no asset summary for \(modelURL.path)")
         }
-        let functions = summary.functions
-        if functions.contains(where: { $0.name == "decode_step" }) { return .cohere }
-        if let encode = functions.first(where: { $0.name == "encode" }), !encode.states.isEmpty {
-            return .nemotron   // cache-aware streaming encoder carries states
-        }
+        let names = Set(summary.functions.map { $0.name })
+        let encodeHasStates = summary.functions
+            .first(where: { $0.name == "encode" })
+            .map { !$0.states.isEmpty } ?? false
+        return AssetFunctions(names: names, encodeHasStates: encodeHasStates)
+    }
+
+    /// Classify the asset by its function signatures (reads metadata only).
+    public static func detect(modelURL: URL) throws -> ModelBackend {
+        let fns = try assetFunctions(modelURL: modelURL)
+        if fns.names.contains("decode_step") { return .cohere }
+        if fns.encodeHasStates { return .nemotron }   // cache-aware streaming encoder
         return .parakeet
     }
 }
