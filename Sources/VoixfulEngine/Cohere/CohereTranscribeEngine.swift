@@ -17,7 +17,7 @@ import Accelerate
 import CoreAI
 import Foundation
 
-public actor CohereEngine {
+public actor CohereTranscribeEngine {
     private let encodeFn: InferenceFunction
     private let decodeFn: InferenceFunction
     private let tokenizer: CohereTokenizer

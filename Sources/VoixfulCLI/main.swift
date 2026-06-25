@@ -1,7 +1,7 @@
 // voixful — brand CLI built on the SpeechAnalyzer-shaped Voixful API.
 //
 // Dogfoods the new surface: `transcribe` drives `VoixfulAnalyzer` +
-// `NemotronTranscriber` exactly the way a third-party app would.
+// `NemotronStreamingTranscriber` exactly the way a third-party app would.
 //
 //   voixful transcribe input.wav --model path/to.aimodel --output out.txt
 //   voixful languages
@@ -11,8 +11,8 @@ import AVFoundation
 import Foundation
 import VoixfulSpeech
 import VoixfulTUI
-import VoixfulNemotron
-import VoixfulParakeet
+import VoixfulNemotronStreaming
+import VoixfulParakeetTDT
 import VoixfulCohereTranscribe
 import VoixfulEngine
 
@@ -87,12 +87,12 @@ struct Transcribe: AsyncParsableCommand {
             case .nemotron:
                 // Batch needs the baked `preprocess_audio`; without it (every
                 // convert-pipeline model), stream. No user flag required.
-                transcriber = try NemotronTranscriber(
+                transcriber = try NemotronStreamingTranscriber(
                     modelURL: modelURL, locale: locale, chunkSizeMS: chunk,
                     mode: fns.names.contains("preprocess_audio") ? .batch : .streaming,
                     reportingOptions: [], attributeOptions: [.audioTimeRange])
             case .parakeet:
-                transcriber = ParakeetTranscriber(
+                transcriber = ParakeetTDTTranscriber(
                     modelURL: modelURL, piecesURL: piecesURL(modelURL), locale: locale)
             case .cohere:
                 transcriber = CohereTranscriber(
@@ -209,9 +209,9 @@ struct Mic: AsyncParsableCommand {
         // shared, model-agnostic mic session driver, which captures audio,
         // drives the analyzer, and renders the live UI. A new model's CLI does
         // exactly this with its own transcriber.
-        let transcriber: NemotronTranscriber
+        let transcriber: NemotronStreamingTranscriber
         do {
-            transcriber = try NemotronTranscriber(
+            transcriber = try NemotronStreamingTranscriber(
                 modelURL: URL(fileURLWithPath: model),
                 locale: Locale(identifier: language),
                 chunkSizeMS: chunk,
@@ -236,7 +236,7 @@ struct Languages: AsyncParsableCommand {
     )
 
     func run() async throws {
-        let tags = NemotronTranscriber.supportedLocales
+        let tags = NemotronStreamingTranscriber.supportedLocales
             .map { $0.identifier(.bcp47) }
             .sorted()
             .joined(separator: "\n")

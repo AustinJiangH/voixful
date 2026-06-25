@@ -188,7 +188,7 @@ public actor GreedyRNNTDecoder {
     /// alongside `EncoderSession.reset()` on the same boundary — never
     /// independently. The decoder does NOT call `EncoderSession.reset()`
     /// because it doesn't hold a reference to the encoder; that's the
-    /// `StreamingASR` actor's job (Phase F).
+    /// `NemotronStreamingEngine` actor's job (Phase F).
     ///
     /// Resetting the joiner is a no-op (stateless), which is why no
     /// `joiner.reset()` call appears here.

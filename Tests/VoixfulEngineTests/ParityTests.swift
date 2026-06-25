@@ -1,6 +1,6 @@
 // Phase H — End-to-end WER parity gate per PLAN.md §7 Phase 5.
 //
-// Loads the `.aimodel` from the fixtures directory and runs `StreamingASR`
+// Loads the `.aimodel` from the fixtures directory and runs `NemotronStreamingEngine`
 // against the LibriSpeech test-clean split, then compares the measured WER
 // against the reference value recorded in PLAN.md Phase 1. Tolerance is
 // ±0.5 percentage points per PLAN.md §0 ("done" criteria) and §7 Phase 5.
@@ -69,7 +69,7 @@ final class ParityTests: XCTestCase {
     // MARK: - The gate
 
     /// End-to-end WER parity gate. Skipped if either fixture is unavailable.
-    /// Runs through StreamingASR exactly as the CLI does — same chunk size,
+    /// Runs through NemotronStreamingEngine exactly as the CLI does — same chunk size,
     /// same language, same `start() / feed(...) / finish()` lifecycle — so a
     /// pass here implies the CLI path is on-WER too.
     func testLibriSpeechTestCleanWER() async throws {
@@ -90,7 +90,7 @@ final class ParityTests: XCTestCase {
         }
 
         // Resolve the .aimodel fixture. Without the converted model there's
-        // no way to construct StreamingASR.
+        // no way to construct NemotronStreamingEngine.
         let modelURL = Self.fixturesDirectory().appendingPathComponent("aimodel")
         guard FileManager.default.fileExists(atPath: modelURL.path) else {
             throw XCTSkip("requires .aimodel fixture at \(modelURL.path) — see fixtures/README.md")
@@ -110,18 +110,18 @@ final class ParityTests: XCTestCase {
             throw XCTSkip("manifest at \(manifestURL.path) is empty")
         }
 
-        // Construct StreamingASR exactly as the CLI does. Chunk size 320 ms
+        // Construct NemotronStreamingEngine exactly as the CLI does. Chunk size 320 ms
         // is the PLAN.md §9 Decision 9 default and the chunk size at which
         // the reference WER above was measured.
-        let asr: StreamingASR
+        let asr: NemotronStreamingEngine
         do {
-            asr = try await StreamingASR(
+            asr = try await NemotronStreamingEngine(
                 modelURL: modelURL,
                 language: .enUS,
                 chunkSize: .ms320
             )
         } catch {
-            throw XCTSkip("could not construct StreamingASR: \(error)")
+            throw XCTSkip("could not construct NemotronStreamingEngine: \(error)")
         }
 
         // Run each utterance through the streaming path and accumulate

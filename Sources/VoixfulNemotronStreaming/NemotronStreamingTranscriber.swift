@@ -1,9 +1,9 @@
-// VoixfulNemotron — the Nemotron 3.5 backend behind the Voixful brand surface.
+// VoixfulNemotronStreaming — the Nemotron 3.5 backend behind the Voixful brand surface.
 //
-// `NemotronTranscriber` conforms to `VoixfulSpeech.Transcribing`, wrapping the
-// existing `StreamingASR` engine. Its public surface uses only Foundation +
+// `NemotronStreamingTranscriber` conforms to `VoixfulSpeech.Transcribing`, wrapping the
+// existing `NemotronStreamingEngine` engine. Its public surface uses only Foundation +
 // VoixfulSpeech types (Locale, ReportingOption, …) — the Nemotron-specific
-// `Language`/`ChunkSize`/`StreamingASR` types stay internal, so the brand API
+// `Language`/`ChunkSize`/`NemotronStreamingEngine` types stay internal, so the brand API
 // is identical across backends.
 //
 // Implemented as an `actor` for its mutable per-utterance state, but the
@@ -16,7 +16,7 @@
 //                each update. Most accurate (full reflect-padded mel context),
 //                but per-update cost grows with utterance length. Best for
 //                finite files.
-//   .streaming — strategy (B): drive StreamingASR.feed()/finish() incrementally.
+//   .streaming — strategy (B): drive NemotronStreamingEngine.feed()/finish() incrementally.
 //                Fixed cost per chunk, no re-transcription — stays fast for
 //                open-ended live capture. Uses the streaming mel path, which
 //                trades a little accuracy for constant-time updates.
@@ -32,7 +32,7 @@ public enum ProcessingMode: Sendable, Equatable {
     case streaming
 }
 
-public actor NemotronTranscriber: Transcribing {
+public actor NemotronStreamingTranscriber: Transcribing {
 
     // MARK: - Caller-facing surface (synchronous)
 
@@ -57,7 +57,7 @@ public actor NemotronTranscriber: Transcribing {
     private let debug: Bool
     private let converter = AudioInputConverter()
 
-    private var engine: StreamingASR?
+    private var engine: NemotronStreamingEngine?
     private var utterance: [Float] = []   // batch mode only
     private var pendingStream: [Float] = []   // streaming mode — batched before feed()
     private var samplesSeen = 0           // both modes — drives the time range
@@ -123,7 +123,7 @@ public actor NemotronTranscriber: Transcribing {
     public func prepare() async throws {
         guard engine == nil else { return }
         do {
-            let engine = try await StreamingASR(
+            let engine = try await NemotronStreamingEngine(
                 modelURL: modelURL,
                 language: language,
                 chunkSize: chunkSize
@@ -217,7 +217,7 @@ public actor NemotronTranscriber: Transcribing {
 
         var text = AttributedString(rawText)
         if attributeOptions.contains(.audioTimeRange) {
-            // Per-token timing is a Phase-F placeholder in StreamingASR; for now
+            // Per-token timing is a Phase-F placeholder in NemotronStreamingEngine; for now
             // the whole utterance carries one audioTimeRange run.
             text.audioTimeRange = AudioTimeRange(start: start, duration: duration)
         }

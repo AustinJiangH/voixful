@@ -2,17 +2,17 @@
 
 Python tooling that converts upstream ASR checkpoints into the Core AI
 `.aimodel` assets the Swift runtime loads. Organized **model by model**, mirroring
-the `Sources/` backend layout (`VoixfulNemotron`, future `VoixfulParakeet`, …):
+the `Sources/` backend layout (`VoixfulNemotronStreaming`, future `VoixfulParakeetTDT`, …):
 each model's conversion is self-contained — its own `pyproject.toml` (deps differ
 per model — Nemotron needs NeMo), its own package, its own README.
 
 ```
 convert/
 ├── README.md                 ← you are here (brand overview)
-├── nemotron/                 ← Nemotron 3.5 ASR Streaming 0.6B (RNN-T, streaming)
+├── nemotron-streaming/                 ← Nemotron 3.5 ASR Streaming 0.6B (RNN-T, streaming)
 │   ├── pyproject.toml · README.md
 │   └── nemotron_convert/     ← convert.py / extract.py / export.py / models.py / …
-├── parakeet/                 ← Parakeet TDT 0.6B (TDT, full-context)
+├── parakeet-tdt/                 ← Parakeet TDT 0.6B (TDT, full-context)
 │   ├── pyproject.toml · README.md
 │   └── parakeet_convert/     ← convert.py / extract.py / export.py / models.py
 └── cohere-transcribe/                   ← Cohere Transcribe 2B (attention encoder-decoder)

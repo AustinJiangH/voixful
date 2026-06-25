@@ -1,6 +1,6 @@
 // swift-tools-version: 6.0
 // Voixful — SpeechAnalyzer-shaped on-device speech API over local models.
-// Monorepo: VoixfulSpeech (brand core) + per-model backends (VoixfulNemotron).
+// Monorepo: VoixfulSpeech (brand core) + per-model backends (VoixfulNemotronStreaming).
 // See DESIGN_ANALYZER_API.md for the topology this manifest realizes.
 
 import PackageDescription
@@ -16,8 +16,8 @@ let package = Package(
         // Model-agnostic live terminal UI (mic session) — shared by every backend's CLI.
         .library(name: "VoixfulTUI", targets: ["VoixfulTUI"]),
         // Per-model backends — each a `Transcribing` conformer behind the façade.
-        .library(name: "VoixfulNemotron", targets: ["VoixfulNemotron"]),
-        .library(name: "VoixfulParakeet", targets: ["VoixfulParakeet"]),
+        .library(name: "VoixfulNemotronStreaming", targets: ["VoixfulNemotronStreaming"]),
+        .library(name: "VoixfulParakeetTDT", targets: ["VoixfulParakeetTDT"]),
         .library(name: "VoixfulCohereTranscribe", targets: ["VoixfulCohereTranscribe"]),
         // Brand CLI: `voixful transcribe …`.
         .executable(name: "voixful", targets: ["VoixfulCLI"]),
@@ -44,11 +44,11 @@ let package = Package(
 
         // MARK: Per-model backends (each: core façade + the engine)
         .target(
-            name: "VoixfulNemotron",
+            name: "VoixfulNemotronStreaming",
             dependencies: ["VoixfulSpeech", "VoixfulEngine"]
         ),
         .target(
-            name: "VoixfulParakeet",
+            name: "VoixfulParakeetTDT",
             dependencies: ["VoixfulSpeech", "VoixfulEngine"]
         ),
         .target(
@@ -62,8 +62,8 @@ let package = Package(
             dependencies: [
                 "VoixfulSpeech",
                 "VoixfulTUI",
-                "VoixfulNemotron",
-                "VoixfulParakeet",
+                "VoixfulNemotronStreaming",
+                "VoixfulParakeetTDT",
                 "VoixfulCohereTranscribe",
                 "VoixfulEngine",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),

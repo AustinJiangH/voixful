@@ -1,7 +1,7 @@
 // VoixfulCohere — Cohere Transcribe 2B (attention encoder-decoder) as a
 // `Transcribing` backend behind the Voixful façade. Full-context: buffers all
 // input via `consume`, transcribes once at `finalize`. Keeps the engine
-// (`CohereEngine`) and Core AI types internal.
+// (`CohereTranscribeEngine`) and Core AI types internal.
 
 import AVFoundation
 import Foundation
@@ -26,7 +26,7 @@ public actor CohereTranscriber: Transcribing {
     private let modelURL: URL
     private let piecesURL: URL
     private let converter = AudioInputConverter()
-    private var engine: CohereEngine?
+    private var engine: CohereTranscribeEngine?
     private var utterance: [Float] = []
     private var samplesSeen = 0
     private var utteranceStart: Double?
@@ -51,7 +51,7 @@ public actor CohereTranscriber: Transcribing {
     public func prepare() async throws {
         guard engine == nil else { return }
         do {
-            engine = try await CohereEngine(modelURL: modelURL, piecesURL: piecesURL)
+            engine = try await CohereTranscribeEngine(modelURL: modelURL, piecesURL: piecesURL)
         } catch {
             throw VoixfulError.engine("could not load Cohere engine: \(error)")
         }

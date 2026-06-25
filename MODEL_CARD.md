@@ -70,7 +70,7 @@ voixful transcribe clip.wav --model path/to/nemotron-palette4.aimodel --streamin
 ## How it was made
 
 ```sh
-# in convert/nemotron, with the coreai toolchain (pydantic<2.10):
+# in convert/nemotron-streaming, with the coreai toolchain (pydantic<2.10):
 python -m nemotron_convert.convert --quantize palette4 \
        --output nemotron-palette4.aimodel
 ```

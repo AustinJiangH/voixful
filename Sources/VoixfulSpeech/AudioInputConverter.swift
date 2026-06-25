@@ -1,14 +1,14 @@
 // VoixfulSpeech — AVAudioPCMBuffer → [Float] 16 kHz mono.
 //
 // Centralizes the format conversion that previously lived (twice) in the CLI
-// and the SwiftUI demo. Used only inside `NemotronTranscriber`'s actor
+// and the SwiftUI demo. Used only inside `NemotronStreamingTranscriber`'s actor
 // isolation, so it carries mutable converter state without needing Sendable.
 
 import AVFoundation
 
 
 public final class AudioInputConverter {
-    /// The format `StreamingASR.feed`/`transcribe` requires.
+    /// The format `NemotronStreamingEngine.feed`/`transcribe` requires.
     private static let target = AVAudioFormat(
         commonFormat: .pcmFormatFloat32,
         sampleRate: 16_000,

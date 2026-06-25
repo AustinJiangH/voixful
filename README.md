@@ -11,7 +11,7 @@ runs your own model, fully on device, on the ANE/GPU.
 - **`VoixfulSpeech`** — the brand core (model-agnostic): `VoixfulAnalyzer`, the
   `VoixfulSpeechModule` / `Transcribing` protocols, `AnalyzerInput`,
   `TranscriptionResult`. Depends on no model.
-- **`VoixfulNemotron`** — the Nemotron backend: `NemotronTranscriber: Transcribing`
+- **`VoixfulNemotronStreaming`** — the Nemotron backend: `NemotronStreamingTranscriber: Transcribing`
   wrapping the streaming RNN-T engine.
 - **`VoixfulTUI`** — a reusable live-mic terminal UI (used by the CLI; works for
   any backend).
@@ -61,7 +61,7 @@ voixful/
 ├── Sources/
 │   ├── VoixfulSpeech/          # brand core (analyzer + protocols + types)
 │   ├── VoixfulTUI/             # reusable live-mic terminal UI
-│   ├── VoixfulNemotron/        # NemotronTranscriber : Transcribing
+│   ├── VoixfulNemotronStreaming/        # NemotronStreamingTranscriber : Transcribing
 │   ├── VoixfulCLI/             # `voixful` executable
 │   ├── NemotronASR/            # streaming RNN-T engine (mel, sessions, decoder)
 │   └── NemotronASRCLI/         # legacy `nemotron-asr` executable

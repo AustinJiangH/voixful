@@ -1,14 +1,14 @@
-// VoixfulParakeet — Parakeet TDT 0.6B as a `Transcribing` backend behind the
+// VoixfulParakeetTDT — Parakeet TDT 0.6B as a `Transcribing` backend behind the
 // Voixful façade (DESIGN_ANALYZER_API.md §4: "one backend behind a shared
 // façade"). Full-context: buffers all input via `consume`, transcribes once at
-// `finalize`. Keeps the engine (`ParakeetEngine`) and Core AI types internal.
+// `finalize`. Keeps the engine (`ParakeetTDTEngine`) and Core AI types internal.
 
 import AVFoundation
 import Foundation
 import VoixfulEngine
 import VoixfulSpeech
 
-public actor ParakeetTranscriber: Transcribing {
+public actor ParakeetTDTTranscriber: Transcribing {
 
     // MARK: Transcribing / VoixfulSpeechModule
     public nonisolated let moduleIdentifier = "voixful.parakeet"
@@ -26,7 +26,7 @@ public actor ParakeetTranscriber: Transcribing {
     private let modelURL: URL
     private let piecesURL: URL
     private let converter = AudioInputConverter()
-    private var engine: ParakeetEngine?
+    private var engine: ParakeetTDTEngine?
     private var utterance: [Float] = []
     private var samplesSeen = 0
     private var utteranceStart: Double?
@@ -51,7 +51,7 @@ public actor ParakeetTranscriber: Transcribing {
     public func prepare() async throws {
         guard engine == nil else { return }
         do {
-            engine = try await ParakeetEngine(modelURL: modelURL, piecesURL: piecesURL)
+            engine = try await ParakeetTDTEngine(modelURL: modelURL, piecesURL: piecesURL)
         } catch {
             throw VoixfulError.engine("could not load Parakeet engine: \(error)")
         }

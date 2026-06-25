@@ -2,7 +2,7 @@
 //
 // `VoixfulSpeechModule` is the analyzer↔module contract (audio in). `Transcribing`
 // refines it with the transcription result stream (results out). Concrete
-// modules — `NemotronTranscriber` and future backends — live in their own
+// modules — `NemotronStreamingTranscriber` and future backends — live in their own
 // targets and conform to `Transcribing`. This is what makes models swappable
 // under one brand: the analyzer only knows the protocol.
 

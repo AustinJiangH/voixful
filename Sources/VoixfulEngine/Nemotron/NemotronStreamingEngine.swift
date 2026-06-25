@@ -1,4 +1,4 @@
-// Phase F — Public StreamingASR actor.
+// Phase F — Public NemotronStreamingEngine actor.
 //
 // The package's single public entry point for streaming transcription. Owns
 // the four sessions (encoder, prediction, joiner, mel extractor + tokenizer)
@@ -39,7 +39,7 @@
 import CoreAI
 import Foundation
 
-public actor StreamingASR {
+public actor NemotronStreamingEngine {
     // MARK: - Configuration
 
     /// Locale this session was constructed with. Drives the one-hot vector
@@ -133,7 +133,7 @@ public actor StreamingASR {
 
     // MARK: - Init
 
-    /// Construct a `StreamingASR` session.
+    /// Construct a `NemotronStreamingEngine` session.
     ///
     /// - Parameters:
     ///   - modelURL: Path to the `nemotron-streaming.aimodel` artifact

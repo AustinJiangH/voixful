@@ -1,7 +1,7 @@
 // Phase D / Phase F — Shared types used across the VoixfulEngine package.
 //
 // These types intentionally have no Core AI dependency so they can be imported
-// by every other file (sessions, decoder, public StreamingASR actor, CLI) without
+// by every other file (sessions, decoder, public NemotronStreamingEngine actor, CLI) without
 // pulling the framework into modules that don't need it.
 //
 // Phase F additions: `ChunkSize` (the 5 cache-aware streaming configurations
@@ -15,7 +15,7 @@ import Foundation
 /// Errors thrown by every layer of the VoixfulEngine package.
 ///
 /// Kept `Sendable` so they can cross actor / `Task` boundaries — the public
-/// `StreamingASR` actor in Phase F propagates these out to callers via `throws`
+/// `NemotronStreamingEngine` actor in Phase F propagates these out to callers via `throws`
 /// on its `async` methods.
 public enum ASRError: Error, Sendable {
     /// `AIModel(contentsOf:)` failed (file missing, corrupt, unsupported
@@ -43,7 +43,7 @@ public enum ASRError: Error, Sendable {
 
 // MARK: - Streaming output
 
-/// A streaming partial hypothesis emitted by `StreamingASR.feed(...)` as audio
+/// A streaming partial hypothesis emitted by `NemotronStreamingEngine.feed(...)` as audio
 /// chunks are consumed.
 ///
 /// `stableUntilToken` is the index in `text` (token index, not character index)
@@ -73,7 +73,7 @@ public struct PartialHypothesis: Sendable {
 
 // MARK: - Final transcript
 
-/// The final transcript returned by `StreamingASR.finish()` once the audio
+/// The final transcript returned by `NemotronStreamingEngine.finish()` once the audio
 /// stream is closed.
 public struct Transcript: Sendable {
     /// The full detokenized transcript text, including any whitespace and
@@ -121,7 +121,7 @@ public struct Transcript: Sendable {
 /// in the chunk. A single set of weights covers all five at runtime by varying
 /// `att_context_size`; whether the runtime selects between them via different
 /// inference function calls or via baked-per-`.aimodel` variants is the §10
-/// open question Phase 2/3 resolves. Until then, `StreamingASR` accepts this
+/// open question Phase 2/3 resolves. Until then, `NemotronStreamingEngine` accepts this
 /// enum at init and uses it solely to gate how many mel frames to accumulate
 /// before invoking the encoder.
 ///
@@ -164,7 +164,7 @@ public enum ChunkSize: String, CaseIterable, Sendable {
     }
 
     /// Total mel frames in one chunk = 1 (the "current" 80 ms frame) +
-    /// right context frames. This is how many mel frames `StreamingASR` must
+    /// right context frames. This is how many mel frames `NemotronStreamingEngine` must
     /// accumulate before invoking the encoder.
     ///
     /// Derived as `1 + attContextRight`: PLAN.md §2 table shows the chunk

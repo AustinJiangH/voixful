@@ -5,7 +5,7 @@
 // → vocab logits. No `register_buffer` on the PyTorch side, no `state_names` in
 // the convert call, no `MutableViews` here. The actor exists purely to serialize
 // access to the underlying `InferenceFunction` and to live alongside its sibling
-// sessions in a single `StreamingASR` actor graph.
+// sessions in a single `NemotronStreamingEngine` actor graph.
 //
 // Input names ("enc_step", "pred_emb") match `input_names=[...]` for the
 // "join" program in convert/nemotron_convert/convert.py.

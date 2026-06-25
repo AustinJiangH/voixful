@@ -18,7 +18,7 @@ import Accelerate
 import CoreAI
 import Foundation
 
-public actor ParakeetEngine {
+public actor ParakeetTDTEngine {
     private let encodeFn: InferenceFunction
     private let prediction: PredictionSession
     private let joiner: JoinerSession

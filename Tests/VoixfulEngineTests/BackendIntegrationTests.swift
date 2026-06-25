@@ -87,7 +87,7 @@ final class BackendIntegrationTests: XCTestCase {
         try require(model)
         try require(wrongPieces)
         do {
-            _ = try await ParakeetEngine(modelURL: model, piecesURL: wrongPieces)
+            _ = try await ParakeetTDTEngine(modelURL: model, piecesURL: wrongPieces)
             XCTFail("expected a vocab-mismatch error")
         } catch {
             XCTAssertTrue("\(error)".contains("vocab mismatch"), "got: \(error)")
@@ -97,11 +97,11 @@ final class BackendIntegrationTests: XCTestCase {
     func testNemotronStreamingTranscribes() async throws {
         let dir = try modelsDir()
         let model = dir.appendingPathComponent("nemotron-palette4.aimodel")
-        try require(model)   // sibling pieces.txt is resolved by StreamingASR
+        try require(model)   // sibling pieces.txt is resolved by NemotronStreamingEngine
         // The streaming feed() path (Swift-computed mel) — what `voixful
         // transcribe --streaming` uses. The batch `transcribe(audio:)` needs the
         // baked `preprocess_audio`, which the convert-pipeline palette4 lacks.
-        let asr = try await StreamingASR(modelURL: model)
+        let asr = try await NemotronStreamingEngine(modelURL: model)
         await asr.start()
         _ = try await asr.feed(sampleAudio())
         let transcript = try await asr.finish()
@@ -113,7 +113,7 @@ final class BackendIntegrationTests: XCTestCase {
         let dir = try modelsDir()
         let model = dir.appendingPathComponent("parakeet-palette4.aimodel")
         try require(model)
-        let engine = try await ParakeetEngine(
+        let engine = try await ParakeetTDTEngine(
             modelURL: model, piecesURL: dir.appendingPathComponent("parakeet-pieces.txt"))
         let text = try await engine.transcribe(audio: sampleAudio())
         XCTAssertTrue(text.lowercased().contains("quick brown fox"),
@@ -124,7 +124,7 @@ final class BackendIntegrationTests: XCTestCase {
         let dir = try modelsDir()
         let model = dir.appendingPathComponent("cohere-palette4.aimodel")
         try require(model)
-        let engine = try await CohereEngine(
+        let engine = try await CohereTranscribeEngine(
             modelURL: model, piecesURL: dir.appendingPathComponent("cohere-pieces.txt"))
         let text = try await engine.transcribe(audio: sampleAudio())
         XCTAssertTrue(text.lowercased().contains("quick brown fox"),

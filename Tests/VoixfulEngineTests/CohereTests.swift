@@ -67,14 +67,14 @@ final class CohereTests: XCTestCase {
     /// (`_infer_encoder_lengths_from_raw`). Reference values were taken from the
     /// upstream PyTorch model: 545→69, 1000→125, 3500→438.
     func testEncoderLengthFormula() {
-        XCTAssertEqual(CohereEngine.encLen(545), 69)
-        XCTAssertEqual(CohereEngine.encLen(1000), 125)
-        XCTAssertEqual(CohereEngine.encLen(3500), 438)
+        XCTAssertEqual(CohereTranscribeEngine.encLen(545), 69)
+        XCTAssertEqual(CohereTranscribeEngine.encLen(1000), 125)
+        XCTAssertEqual(CohereTranscribeEngine.encLen(3500), 438)
     }
 
     /// Output length is clamped to the encoder's fixed 438-frame window.
     func testEncoderLengthClampedToWindow() {
-        XCTAssertLessThanOrEqual(CohereEngine.encLen(99999), 438)
-        XCTAssertGreaterThanOrEqual(CohereEngine.encLen(1), 1)
+        XCTAssertLessThanOrEqual(CohereTranscribeEngine.encLen(99999), 438)
+        XCTAssertGreaterThanOrEqual(CohereTranscribeEngine.encLen(1), 1)
     }
 }

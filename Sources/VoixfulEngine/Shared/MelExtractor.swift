@@ -115,7 +115,7 @@ public actor MelExtractor {
 
     // Resolves the Phase-C VERIFY: Swift 6 / SDK 27.0 confirms actor deinit
     // cannot access non-Sendable FFTSetup (OpaquePointer). Migrated to explicit
-    // `close()` as the Phase-C reviewer anticipated. Callers (StreamingASR)
+    // `close()` as the Phase-C reviewer anticipated. Callers (NemotronStreamingEngine)
     // invoke `await mel.close()` on shutdown; if a session is dropped without
     // close, vDSP's setup leaks but the leak is bounded (one allocation per
     // MelExtractor lifetime, typically one per app).
@@ -125,7 +125,7 @@ public actor MelExtractor {
     private var closed = false
 
     /// Release the underlying vDSP FFT setup. Idempotent. Call once at the end
-    /// of the MelExtractor's useful life (e.g., when StreamingASR is being
+    /// of the MelExtractor's useful life (e.g., when NemotronStreamingEngine is being
     /// torn down).
     public func close() {
         guard !closed else { return }

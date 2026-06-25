@@ -150,7 +150,7 @@ final class CacheRoundTripTests: XCTestCase {
 
         // VERIFY: `AIModel(contentsOf:)` signature per PLAN.md §6 "Model loading".
         // If it turns out to be sync (`throws` only, no `await`), remove the
-        // `await` here AND in StreamingASR.init.
+        // `await` here AND in NemotronStreamingEngine.init.
         let model: AIModel
         do {
             model = try await AIModel(contentsOf: modelURL)

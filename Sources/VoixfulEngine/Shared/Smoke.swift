@@ -64,7 +64,7 @@ public struct SmokeStepResult: Sendable {
 // MARK: - Smoke namespace
 
 /// Stateless namespace holding the four model-free smoke steps. Step 4 (full
-/// pipeline) lives on the CLI side because it needs `await StreamingASR(...)`
+/// pipeline) lives on the CLI side because it needs `await NemotronStreamingEngine(...)`
 /// and we don't want this library file to take a soft dependency on the CLI's
 /// audio synthesis cadence; the test target invokes Steps 1-3 only.
 public enum Smoke {
