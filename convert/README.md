@@ -9,17 +9,16 @@ per model — Nemotron needs NeMo), its own package, its own README.
 ```
 convert/
 ├── README.md                 ← you are here (brand overview)
-└── nemotron/                 ← Nemotron 3.5 ASR Streaming 0.6B
-    ├── pyproject.toml
-    ├── README.md             ← install + run instructions
-    └── nemotron_convert/     ← NeMo → torch.export → coreai_torch
-        ├── convert.py        ← entry point (emits nemotron-streaming.aimodel)
-        ├── extract.py        ← pull nn.Modules out of the .nemo checkpoint
-        ├── export.py         ← torch.export each (encode / predict_step / join)
-        ├── models.py         ← Core-AI-shaped wrappers
-        ├── verify_parity.py  ← FP32 vs converted SNR check
-        └── smoke.py / *_demo.py
+├── nemotron/                 ← Nemotron 3.5 ASR Streaming 0.6B (RNN-T, streaming)
+│   ├── pyproject.toml · README.md
+│   └── nemotron_convert/     ← convert.py / extract.py / export.py / models.py / …
+└── parakeet/                 ← Parakeet TDT 0.6B (TDT, full-context) — vs FluidAudio
+    ├── pyproject.toml · README.md
+    └── parakeet_convert/     ← convert.py / extract.py / export.py / models.py
 ```
+
+Each model is self-contained (own `pyproject.toml`, own package, own license note);
+both expose `convert.py --quantize {none,int8,palette4,palette6}`.
 
 ## Adding a new model
 

@@ -1,0 +1,18 @@
+[project]
+name = "parakeet-convert"
+version = "0.1.0"
+description = "NeMo Parakeet TDT 0.6B -> torch.export -> coreai_torch -> Core AI .aimodel. See ./README.md."
+requires-python = ">=3.11"
+license = "Apache-2.0"
+dependencies = [
+    "nemo-toolkit[asr]>=2.0",
+    "coreai-torch",
+    "torch>=2.5,<3.0",
+    "numpy",
+    "pydantic>=2.6,<2.10",   # required for the coreai_opt --quantize path
+    # coreai-optimization is needed for --quantize (install separately: `uv pip install --pre coreai-opt`)
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
