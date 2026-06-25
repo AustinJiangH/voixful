@@ -12,9 +12,12 @@ convert/
 ├── nemotron/                 ← Nemotron 3.5 ASR Streaming 0.6B (RNN-T, streaming)
 │   ├── pyproject.toml · README.md
 │   └── nemotron_convert/     ← convert.py / extract.py / export.py / models.py / …
-└── parakeet/                 ← Parakeet TDT 0.6B (TDT, full-context)
-    ├── pyproject.toml · README.md
-    └── parakeet_convert/     ← convert.py / extract.py / export.py / models.py
+├── parakeet/                 ← Parakeet TDT 0.6B (TDT, full-context)
+│   ├── pyproject.toml · README.md
+│   └── parakeet_convert/     ← convert.py / extract.py / export.py / models.py
+└── cohere/                   ← Cohere Transcribe 2B (attention encoder-decoder)
+    ├── pyproject.toml · README.md   ← planning scaffold (gated model; see README)
+    └── cohere_convert/       ← (to add: convert.py / extract.py / export.py / models.py)
 ```
 
 Each model is self-contained (own `pyproject.toml`, own package, own license note);
