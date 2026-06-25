@@ -23,8 +23,6 @@ let package = Package(
         // Core AI engine layer — shared runtimes for every model (Nemotron RNN-T,
         // Parakeet TDT, Cohere AED) plus shared mel / tokenizer / NDArray infra.
         .library(name: "VoixfulEngine", targets: ["VoixfulEngine"]),
-        // Legacy Nemotron-only CLI (file/mic/languages/smoke), kept during migration.
-        .executable(name: "nemotron-asr", targets: ["NemotronASRCLI"]),
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-argument-parser", from: "1.4.0"),
@@ -72,17 +70,10 @@ let package = Package(
             ]
         ),
 
-        // MARK: Core AI engine (all model runtimes) + legacy CLI + tests
+        // MARK: Core AI engine (all model runtimes) + tests
         .target(
             name: "VoixfulEngine",
             dependencies: []
-        ),
-        .executableTarget(
-            name: "NemotronASRCLI",
-            dependencies: [
-                "VoixfulEngine",
-                .product(name: "ArgumentParser", package: "swift-argument-parser"),
-            ]
         ),
         .testTarget(
             name: "VoixfulEngineTests",
