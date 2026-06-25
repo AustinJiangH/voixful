@@ -117,10 +117,11 @@ public enum Smoke {
         }
 
         // Validate shape. MelExtractor emits row-major [nMels × T] flattened.
-        // Expected T = (sample_count - window_size) / hop_size + 1
-        //           = (16000 - 400) / 160 + 1 = 98 for 1 s of audio.
+        // It mirrors torch.stft(center=True), which reflect-pads n_fft/2 on each
+        // side, so T = sample_count / hop_size + 1 = 16000 / 160 + 1 = 101 for
+        // 1 s of audio (NOT (n - window)/hop + 1 — that ignores the centering).
         let nMels = 128
-        let expectedT = (samples.count - 400) / 160 + 1
+        let expectedT = samples.count / 160 + 1
         let expectedSize = nMels * expectedT
         if output.count != expectedSize {
             return .fail(

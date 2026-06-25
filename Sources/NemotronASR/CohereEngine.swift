@@ -67,7 +67,8 @@ public actor CohereEngine {
 
     /// Encoder valid output length for `realFrames` mel frames — three stride-2
     /// subsampling convs, matching the model's `_infer_encoder_lengths_from_raw`.
-    private static func encLen(_ realFrames: Int) -> Int {
+    /// Internal (not private) so it can be unit-tested.
+    static func encLen(_ realFrames: Int) -> Int {
         var l = realFrames
         for _ in 0..<3 { l = (l - 1) / 2 + 1 }
         return max(1, min(l, tEnc))
