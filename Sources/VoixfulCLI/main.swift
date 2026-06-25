@@ -12,7 +12,7 @@ import Foundation
 import VoixfulSpeech
 import VoixfulTUI
 import VoixfulNemotron
-import NemotronASR
+import VoixfulEngine
 
 @main
 struct Voixful: AsyncParsableCommand {

@@ -1,12 +1,12 @@
 // Phase C — Mel parity gate. See PLAN.md §5 "The parity test (regardless of approach)".
 // Loads a fixture WAV + a NeMo-generated reference [128 × T] float32 blob and asserts
-// max-abs / mean-abs deltas. Fixtures live under Tests/NemotronASRTests/fixtures/;
+// max-abs / mean-abs deltas. Fixtures live under Tests/VoixfulEngineTests/fixtures/;
 // see fixtures/README.md for the generation recipe.
 
 import XCTest
 import Foundation
 import AVFoundation
-@testable import NemotronASR
+@testable import VoixfulEngine
 
 final class MelParityTests: XCTestCase {
 
@@ -51,7 +51,7 @@ final class MelParityTests: XCTestCase {
     // MARK: - Helpers
 
     /// Bundle.module isn't always populated when fixtures aren't declared as resources
-    /// in Package.swift; this fallback resolves to Tests/NemotronASRTests/fixtures/
+    /// in Package.swift; this fallback resolves to Tests/VoixfulEngineTests/fixtures/
     /// relative to the test source file. VERIFY: once Phase H wires resources into
     /// Package.swift via `resources: [.copy("fixtures")]`, this fallback becomes dead code.
     private static func fallbackFixturesDir() -> URL {

@@ -19,7 +19,7 @@ import ArgumentParser
 import AVFoundation
 import Darwin
 import Foundation
-import NemotronASR
+import VoixfulEngine
 
 // MARK: - Terminal-aware partial-display state
 

@@ -19,7 +19,7 @@
 
 import XCTest
 import Foundation
-@testable import NemotronASR
+@testable import VoixfulEngine
 
 final class TokenizerTests: XCTestCase {
 
@@ -193,7 +193,7 @@ final class TokenizerTests: XCTestCase {
         // would be unavailable anyway.
         let here = URL(fileURLWithPath: #filePath)
         let fixtures = here
-            .deletingLastPathComponent()    // .../NemotronASRTests
+            .deletingLastPathComponent()    // .../VoixfulEngineTests
             .deletingLastPathComponent()    // .../Tests
             .deletingLastPathComponent()    // repo root
             .appendingPathComponent("fixtures")

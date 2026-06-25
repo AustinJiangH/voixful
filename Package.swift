@@ -20,8 +20,10 @@ let package = Package(
         // Brand CLI: `voixful transcribe …`.
         .executable(name: "voixful", targets: ["VoixfulCLI"]),
 
-        // Existing engine library + legacy CLI (mic/file), kept during migration.
-        .library(name: "NemotronASR", targets: ["NemotronASR"]),
+        // Core AI engine layer — shared runtimes for every model (Nemotron RNN-T,
+        // Parakeet TDT, Cohere AED) plus shared mel / tokenizer / NDArray infra.
+        .library(name: "VoixfulEngine", targets: ["VoixfulEngine"]),
+        // Legacy Nemotron-only CLI (file/mic/languages/smoke), kept during migration.
         .executable(name: "nemotron-asr", targets: ["NemotronASRCLI"]),
     ],
     dependencies: [
@@ -43,7 +45,7 @@ let package = Package(
         // MARK: Nemotron backend (depends on core + the engine)
         .target(
             name: "VoixfulNemotron",
-            dependencies: ["VoixfulSpeech", "NemotronASR"]
+            dependencies: ["VoixfulSpeech", "VoixfulEngine"]
         ),
 
         // MARK: Brand CLI
@@ -53,7 +55,7 @@ let package = Package(
                 "VoixfulSpeech",
                 "VoixfulTUI",
                 "VoixfulNemotron",
-                "NemotronASR",
+                "VoixfulEngine",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ],
             // Embed an Info.plist (with NSMicrophoneUsageDescription) into the
@@ -70,21 +72,21 @@ let package = Package(
             ]
         ),
 
-        // MARK: Existing engine + legacy CLI + tests
+        // MARK: Core AI engine (all model runtimes) + legacy CLI + tests
         .target(
-            name: "NemotronASR",
+            name: "VoixfulEngine",
             dependencies: []
         ),
         .executableTarget(
             name: "NemotronASRCLI",
             dependencies: [
-                "NemotronASR",
+                "VoixfulEngine",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ]
         ),
         .testTarget(
-            name: "NemotronASRTests",
-            dependencies: ["NemotronASR"]
+            name: "VoixfulEngineTests",
+            dependencies: ["VoixfulEngine"]
         ),
     ]
 )

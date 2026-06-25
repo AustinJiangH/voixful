@@ -10,7 +10,7 @@
 // doesn't carry an equivalent guard, so this test is the release-build counterpart.
 
 import XCTest
-@testable import NemotronASR
+@testable import VoixfulEngine
 
 final class ChunkSizeTests: XCTestCase {
 

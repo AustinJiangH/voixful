@@ -5,12 +5,12 @@
 // (full pipeline) is exercised only by the CLI subcommand and only when a
 // `--model` path is supplied, since it requires real model artifacts.
 //
-// The step implementations live in `NemotronASR.Smoke` (Sources/NemotronASR/Smoke.swift)
+// The step implementations live in `VoixfulEngine.Smoke` (Sources/VoixfulEngine/Smoke.swift)
 // so this test and the `smoke` CLI subcommand exercise the same code.
 // Regressions caught here are caught at the CLI level too, and vice-versa.
 
 import XCTest
-@testable import NemotronASR
+@testable import VoixfulEngine
 
 final class SmokeTests: XCTestCase {
 

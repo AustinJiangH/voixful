@@ -1,4 +1,4 @@
-// Phase D / Phase F — Shared types used across the NemotronASR package.
+// Phase D / Phase F — Shared types used across the VoixfulEngine package.
 //
 // These types intentionally have no Core AI dependency so they can be imported
 // by every other file (sessions, decoder, public StreamingASR actor, CLI) without
@@ -12,7 +12,7 @@ import Foundation
 
 // MARK: - Errors
 
-/// Errors thrown by every layer of the NemotronASR package.
+/// Errors thrown by every layer of the VoixfulEngine package.
 ///
 /// Kept `Sendable` so they can cross actor / `Task` boundaries — the public
 /// `StreamingASR` actor in Phase F propagates these out to callers via `throws`

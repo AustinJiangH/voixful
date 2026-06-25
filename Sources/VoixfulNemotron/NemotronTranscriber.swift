@@ -24,7 +24,7 @@
 import Foundation
 import CoreMedia
 import VoixfulSpeech
-import NemotronASR
+import VoixfulEngine
 
 /// How the Nemotron backend consumes audio. See type-level docs above.
 public enum ProcessingMode: Sendable, Equatable {

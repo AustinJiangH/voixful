@@ -13,7 +13,7 @@
 // pre-Xcode-27), the corresponding test is compiled out via `#if canImport(CoreAI)`.
 
 import XCTest
-@testable import NemotronASR
+@testable import VoixfulEngine
 
 #if canImport(CoreAI)
 import CoreAI

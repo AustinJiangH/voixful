@@ -4,7 +4,7 @@
 
 import XCTest
 import Foundation
-@testable import NemotronASR
+@testable import VoixfulEngine
 
 final class CohereTests: XCTestCase {
 

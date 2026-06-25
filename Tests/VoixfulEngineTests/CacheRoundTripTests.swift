@@ -25,7 +25,7 @@
 
 import XCTest
 import Foundation
-@testable import NemotronASR
+@testable import VoixfulEngine
 
 #if canImport(CoreAI)
 import CoreAI
@@ -132,7 +132,7 @@ final class CacheRoundTripTests: XCTestCase {
     /// to construct EncoderSession without it.
     ///
     /// VERIFY: this test reaches into `EncoderSession`'s internal cache
-    /// properties via the `@testable import NemotronASR` access path. The
+    /// properties via the `@testable import VoixfulEngine` access path. The
     /// properties are declared at internal-visibility (no access modifier)
     /// in EncoderSession.swift, which is the right call for now — exposing
     /// `preCache` etc. as `public` would invite callers to take ownership of
@@ -219,10 +219,10 @@ final class CacheRoundTripTests: XCTestCase {
     /// declared in Package.swift (no fixtures committed), so Bundle.module
     /// would be unavailable anyway.
     private static func fixturesDirectory() -> URL {
-        // Tests/NemotronASRTests/ → repo-root/fixtures
+        // Tests/VoixfulEngineTests/ → repo-root/fixtures
         let here = URL(fileURLWithPath: #filePath)
         return here
-            .deletingLastPathComponent()    // .../NemotronASRTests
+            .deletingLastPathComponent()    // .../VoixfulEngineTests
             .deletingLastPathComponent()    // .../Tests
             .deletingLastPathComponent()    // repo root
             .appendingPathComponent("fixtures")
@@ -237,7 +237,7 @@ final class CacheRoundTripTests: XCTestCase {
 // properties themselves. They live in the test target (via `@testable import`)
 // and are marked `_test_` so a careless caller can't reach them by accident.
 //
-// VERIFY: this depends on `@testable import NemotronASR` granting access to
+// VERIFY: this depends on `@testable import VoixfulEngine` granting access to
 // EncoderSession's internal stored properties. If a future cleanup makes the
 // cache properties strictly private, replace these extensions with hooks
 // declared on EncoderSession itself (still internal-visibility) so the test

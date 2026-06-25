@@ -1,6 +1,6 @@
 // Phase K — Shared smoke-test logic.
 //
-// The CLI's `smoke` subcommand and `Tests/NemotronASRTests/SmokeTests.swift`
+// The CLI's `smoke` subcommand and `Tests/VoixfulEngineTests/SmokeTests.swift`
 // both exercise the same end-to-end wiring checks. Centralizing the step
 // implementations here means a regression caught at the test level is caught
 // at the CLI level (and vice-versa) without re-implementing the audio synthesis

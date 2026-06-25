@@ -35,7 +35,7 @@
 import XCTest
 import Foundation
 import AVFoundation
-@testable import NemotronASR
+@testable import VoixfulEngine
 
 #if canImport(CoreAI)
 import CoreAI
@@ -387,7 +387,7 @@ final class ParityTests: XCTestCase {
     // MARK: - Helpers
 
     private static func fixturesDirectory() -> URL {
-        // #filePath walk: Tests/NemotronASRTests/ParityTests.swift → project-root/fixtures
+        // #filePath walk: Tests/VoixfulEngineTests/ParityTests.swift → project-root/fixtures
         let here = URL(fileURLWithPath: #filePath)
         return here
             .deletingLastPathComponent()

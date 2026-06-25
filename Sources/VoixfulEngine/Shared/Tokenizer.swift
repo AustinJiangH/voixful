@@ -59,7 +59,7 @@ public actor Tokenizer {
     /// Logger for the one-shot "tokenizer is a stub" warning. We log at most
     /// once per actor instance to avoid spamming the console during the
     /// inevitable Phase F shakeout when nothing produces real text yet.
-    let logger = Logger(subsystem: "NemotronASR", category: "Tokenizer")
+    let logger = Logger(subsystem: "VoixfulEngine", category: "Tokenizer")
 
     /// Set after the first `decode(...)` call so the stub-mode warning fires
     /// exactly once.
@@ -192,7 +192,7 @@ public actor Tokenizer {
         if !hasWarnedStubMode {
             logger.warning(
                 """
-                NemotronASR.Tokenizer is running in stub mode: no SentencePiece \
+                VoixfulEngine.Tokenizer is running in stub mode: no SentencePiece \
                 dependency wired up and the vocab file at \(self.vocabURL.path, privacy: .public) \
                 did not parse as a plain-text per-line vocab. decode(...) will \
                 return an empty string until the dependency is added. See PLAN.md \

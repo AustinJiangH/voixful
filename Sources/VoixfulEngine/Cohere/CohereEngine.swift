@@ -81,7 +81,7 @@ public actor CohereEngine {
         let melFlat = await melExtractor.extract(samples: audio)  // [128 × T]
         let realT = melFlat.count / Self.nMels
         let useT = min(realT, Self.melFrames)
-        let normFlat = perFeatureNormalize(melFlat, frames: realT)
+        let normFlat = perFeatureNormalize(melFlat, nMels: Self.nMels, frames: realT)
 
         var melND = NDArray(shape: [1, Self.nMels, Self.melFrames], scalarType: .float32)
         var melMV = melND.mutableView(as: Float.self)
@@ -170,23 +170,5 @@ public actor CohereEngine {
             prev = next
         }
         return emitted
-    }
-
-    /// NeMo `normalize_batch(..., "per_feature")`: zero mean / unit std per mel bin.
-    private func perFeatureNormalize(_ mel: [Float], frames: Int) -> [Float] {
-        guard frames > 1 else { return mel }
-        var out = mel
-        let n = Float(frames)
-        for m in 0..<Self.nMels {
-            let base = m * frames
-            var mean: Float = 0
-            for t in 0..<frames { mean += mel[base + t] }
-            mean /= n
-            var m2: Float = 0
-            for t in 0..<frames { let d = mel[base + t] - mean; m2 += d * d }
-            let std = (m2 / (n - 1)).squareRoot() + 1e-5
-            for t in 0..<frames { out[base + t] = (mel[base + t] - mean) / std }
-        }
-        return out
     }
 }

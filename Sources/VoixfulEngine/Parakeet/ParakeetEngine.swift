@@ -85,7 +85,7 @@ public actor ParakeetEngine {
         // Nemotron path uses `normalize: NA`, so MelExtractor doesn't do this and
         // we apply it here. Without it the encoder sees out-of-distribution input
         // and the TDT decoder collapses to the prediction network's LM prior.
-        let normFlat = perFeatureNormalize(melFlat, frames: realT)
+        let normFlat = perFeatureNormalize(melFlat, nMels: Self.nMels, frames: realT)
 
         var melND = NDArray(shape: [1, Self.nMels, Self.melFrames], scalarType: .float32)
         var mv = melND.mutableView(as: Float.self)
@@ -116,26 +116,6 @@ public actor ParakeetEngine {
             ))
         }
         return await tokenizer.decode(tokens: emitted, stripLangTags: true)
-    }
-
-    /// NeMo `normalize_batch(..., "per_feature")`: standardize each mel bin to
-    /// zero mean / unit std over `frames` (unbiased std + 1e-5), in place per row.
-    /// Input/output are row-major `[nMels × frames]`.
-    private func perFeatureNormalize(_ mel: [Float], frames: Int) -> [Float] {
-        guard frames > 1 else { return mel }
-        var out = mel
-        let n = Float(frames)
-        for m in 0..<Self.nMels {
-            let base = m * frames
-            var mean: Float = 0
-            for t in 0..<frames { mean += mel[base + t] }
-            mean /= n
-            var m2: Float = 0
-            for t in 0..<frames { let d = mel[base + t] - mean; m2 += d * d }
-            let std = (m2 / (n - 1)).squareRoot() + 1e-5
-            for t in 0..<frames { out[base + t] = (mel[base + t] - mean) / std }
-        }
-        return out
     }
 
     /// TDT greedy decode over the encoder time axis.
