@@ -42,6 +42,9 @@ struct Cohere: AsyncParsableCommand {
     @Option(help: "Write the transcript here (default: stdout).")
     var output: String?
 
+    @Option(help: "Warm-benchmark: load once, transcribe N times, report steady-state inference ms.")
+    var bench: Int?
+
     func run() async throws {
         let samples = try loadMono16k(path: input)
         let engine: CohereEngine
@@ -53,6 +56,24 @@ struct Cohere: AsyncParsableCommand {
         } catch {
             throw ValidationError("could not load Cohere engine: \(error)")
         }
+
+        if let bench, bench > 0 {
+            let audioSeconds = Double(samples.count) / 16_000.0
+            _ = try await engine.transcribe(audio: samples)   // warm
+            var times: [Double] = []
+            for _ in 0..<bench {
+                let t0 = DispatchTime.now().uptimeNanoseconds
+                _ = try await engine.transcribe(audio: samples)
+                times.append(Double(DispatchTime.now().uptimeNanoseconds - t0) / 1e9)
+            }
+            let med = times.sorted()[times.count / 2]
+            FileHandle.standardError.write(Data(String(
+                format: "bench n=%d audio=%.2fs | inference median=%.1fms | RTFx=%.1fx\n",
+                bench, audioSeconds, med * 1000, audioSeconds / med
+            ).utf8))
+            return
+        }
+
         let text = try await engine.transcribe(audio: samples)
         if let output {
             try text.write(toFile: output, atomically: true, encoding: .utf8)
