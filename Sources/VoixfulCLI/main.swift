@@ -14,6 +14,7 @@ import VoixfulTUI
 import VoixfulNemotron
 import VoixfulParakeet
 import VoixfulCohereTranscribe
+import VoixfulEngine
 
 @main
 struct Voixful: AsyncParsableCommand {
@@ -42,8 +43,8 @@ struct Transcribe: AsyncParsableCommand {
     @Option(help: "Path to the .aimodel directory.")
     var model: String
 
-    @Option(help: "Model architecture / backend: nemotron, parakeet, or cohere.")
-    var backend: Backend = .nemotron
+    @Option(help: "Force the model architecture (nemotron/parakeet/cohere). Default: auto-detect from the model.")
+    var backend: Backend?
 
     @Option(help: "SentencePiece vocab for parakeet/cohere. Default: sibling 'pieces.txt' of the model.")
     var pieces: String?
@@ -68,9 +69,20 @@ struct Transcribe: AsyncParsableCommand {
         // driven through the same `VoixfulAnalyzer` (DESIGN_ANALYZER_API.md §4).
         let modelURL = URL(fileURLWithPath: model)
         let locale = Locale(identifier: language)
+
+        // Auto-detect the architecture from the model's functions unless the
+        // caller forces it with --backend.
+        let resolved: Backend
+        if let backend {
+            resolved = backend
+        } else {
+            let detected = try ModelBackend.detect(modelURL: modelURL)
+            resolved = Backend(rawValue: detected.rawValue) ?? .nemotron
+        }
+
         let transcriber: any Transcribing
         do {
-            switch backend {
+            switch resolved {
             case .nemotron:
                 transcriber = try NemotronTranscriber(
                     modelURL: modelURL, locale: locale, chunkSizeMS: chunk,
@@ -84,7 +96,7 @@ struct Transcribe: AsyncParsableCommand {
                     modelURL: modelURL, piecesURL: piecesURL(modelURL), locale: locale)
             }
         } catch {
-            throw ValidationError("could not create \(backend.rawValue) transcriber: \(error)")
+            throw ValidationError("could not create \(resolved.rawValue) transcriber: \(error)")
         }
         let analyzer = VoixfulAnalyzer(modules: [transcriber])
 

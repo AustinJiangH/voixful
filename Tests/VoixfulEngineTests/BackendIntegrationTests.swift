@@ -64,6 +64,20 @@ final class BackendIntegrationTests: XCTestCase {
         return Array(UnsafeBufferPointer(start: ch[0], count: n))
     }
 
+    func testBackendAutoDetection() throws {
+        let dir = try modelsDir()
+        for (file, expected): (String, ModelBackend) in [
+            ("nemotron-palette4.aimodel", .nemotron),
+            ("parakeet-palette4.aimodel", .parakeet),
+            ("cohere-palette4.aimodel", .cohere),
+        ] {
+            let url = dir.appendingPathComponent(file)
+            try require(url)
+            XCTAssertEqual(try ModelBackend.detect(modelURL: url), expected,
+                           "auto-detect for \(file)")
+        }
+    }
+
     func testNemotronStreamingTranscribes() async throws {
         let dir = try modelsDir()
         let model = dir.appendingPathComponent("nemotron-palette4.aimodel")
