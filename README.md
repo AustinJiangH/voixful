@@ -1,61 +1,95 @@
-# NemotronASR — Nemotron 3.5 ASR on Apple Core AI
+# Voixful
 
-End-to-end streaming transcription on Apple Silicon, running `nvidia/nemotron-3.5-asr-streaming-0.6b` through **Core AI** (the WWDC 2026 framework that succeeds Core ML for custom models). Pure Swift at runtime — the `.aimodel` artifact does all the work on the ANE/GPU.
+A **SpeechAnalyzer-shaped** on-device speech API for Apple Silicon, with a local
+Nemotron 3.5 ASR backend running through **Core AI** (the WWDC 2026 framework that
+succeeds Core ML for custom models). Mirrors Apple's `SpeechAnalyzer` /
+`SpeechTranscriber` so developers can adopt it with near-mechanical renames — but
+runs your own model, fully on device, on the ANE/GPU.
 
-## Try the demo
+## What's here
+
+- **`VoixfulSpeech`** — the brand core (model-agnostic): `VoixfulAnalyzer`, the
+  `VoixfulSpeechModule` / `Transcribing` protocols, `AnalyzerInput`,
+  `TranscriptionResult`. Depends on no model.
+- **`VoixfulNemotron`** — the Nemotron backend: `NemotronTranscriber: Transcribing`
+  wrapping the streaming RNN-T engine.
+- **`VoixfulTUI`** — a reusable live-mic terminal UI (used by the CLI; works for
+  any backend).
+- **`voixful`** CLI — `transcribe`, `mic`, `languages`.
+- **`convert/`** — the Python pipeline that produces the Core AI `.aimodel`
+  (NeMo → `torch.export` → `coreai_torch`), incl. **encoder compression**.
+- Legacy `NemotronASR` library + `nemotron-asr` CLI (kept during migration) and a
+  SwiftUI demo in `Demos/`.
+
+## Quick start
 
 ```sh
-./scripts/demo.sh                       # live mic: speak; transcript appears per utterance
-./scripts/demo.sh sample                # one-shot transcribe of the bundled sample.wav
-./scripts/demo.sh file path/to/foo.wav  # one-shot transcribe of any WAV
+swift build -c release
+.build/release/voixful mic        --model path/to/model.aimodel        # live mic
+.build/release/voixful transcribe clip.wav --model path/to/model.aimodel --streaming
+.build/release/voixful languages
 ```
 
-First run builds the Swift CLI in release mode (~15 s). The first mic launch triggers a macOS permission prompt for `nemotron-asr`; grant it once.
+The model `.aimodel` is **not** committed (it's gitignored, ~hundreds of MB to
+GBs). Get it from Hugging Face (see [Distribution](#distribution)) or regenerate
+it with `convert/` (see `convert/README.md`).
 
-## Performance
+## Models & compression
 
-| Path | Runtime | 5.5 s sample.wav |
-|---|---|---|
-| Swift + Core AI (ANE/GPU) | ~1.4 s | **4.5× faster** |
-| Python + NeMo on CPU (former demo path) | ~6.4 s | baseline |
+The encoder can be compressed via `convert.py --quantize`. Measured on M5 Pro
+(`sample.wav`, streaming):
 
-## Status
+| Variant | Disk | Runtime RAM | Speed | Transcript |
+|---|---|---|---|---|
+| FP16 | 2.3 GB | 4.63 GB | 0.62 s | ✅ |
+| INT8 (linear) | 619 MB | 4.63 GB | 0.67 s | ✅ |
+| **4-bit palettization** | **328 MB** | **0.66 GB** | **0.37 s** | ✅ |
 
-| Capability | State |
-|---|---|
-| `swift run nemotron-asr file <wav>` via the `.aimodel` | ✅ produces a transcript |
-| `swift run nemotron-asr mic` via the `.aimodel` | ✅ utterance-by-utterance live captions |
-| Build cleanly on macOS 27 / Xcode 27 SDK / Swift 6.4 | ✅ |
-| Swift tests | ✅ 30 pass, 5 fixture-skip |
-| Mel preprocessor parity with NeMo (preemph + reflect-pad applied) | ✅ within ~0.5 nats |
+**Palettization is the win** — the Neural Engine keeps it compressed in memory
+(just-in-time decompression), so it cuts **disk + RAM + latency**, not just disk.
+Linear INT8 cuts disk only. See `convert/README.md` for the recipe and `MODEL_CARD.md`.
 
 ## Repo layout
 
 ```
-NemotronASR/
+voixful/
 ├── Package.swift
-├── PLAN.md                     # source-of-truth design doc
-├── HANDOFF.md                  # current state + open follow-ups
-├── REVIEW_LOG.md               # per-phase review history (scaffolding workflows)
+├── LICENSE                     # Apache-2.0 (code only)
+├── NOTICE                      # attributions (incl. the model-weights split)
+├── MODEL_CARD.md               # for the Hugging Face model upload
+├── PLAN.md / HANDOFF.md        # design + state
 ├── Sources/
-│   ├── NemotronASR/            # library: mel, sessions, decoder, tokenizer, streaming
-│   └── NemotronASRCLI/         # `nemotron-asr` executable
-├── Tests/NemotronASRTests/
-├── Demos/NemotronDemo/         # SwiftUI macOS demo app
-├── scripts/
-│   ├── demo.sh                 # the one to run
-│   ├── run-all.sh              # build + test + sample transcription
-│   └── smoke.sh                # fast wiring check
-└── fixtures/
-    ├── sample.wav              # bundled audio
-    └── aimodel/
-        ├── nemotron-streaming.aimodel  # the converted model (~2.3 GB)
-        ├── pieces.txt          # SentencePiece vocab (1024 tokens + blank)
-        ├── tokenizer.model     # raw SP binary
-        └── vocab.txt           # WordPiece-style copy (unused by Swift)
+│   ├── VoixfulSpeech/          # brand core (analyzer + protocols + types)
+│   ├── VoixfulTUI/             # reusable live-mic terminal UI
+│   ├── VoixfulNemotron/        # NemotronTranscriber : Transcribing
+│   ├── VoixfulCLI/             # `voixful` executable
+│   ├── NemotronASR/            # streaming RNN-T engine (mel, sessions, decoder)
+│   └── NemotronASRCLI/         # legacy `nemotron-asr` executable
+├── convert/                    # model conversion, one dir per model
+│   └── nemotron/               # NeMo → coreai_torch → .aimodel (+ --quantize)
+├── Tests/ · scripts/ · Demos/ · fixtures/
 ```
 
-## License
+## Distribution
 
-- **Model weights** (`nvidia/nemotron-speech-streaming-en-0.6b`): OpenMDW-1.1 — review before redistribution.
-- **Code in this repo:** TODO — suggest MIT.
+- **Code → GitHub** (this repo).
+- **Model weights → Hugging Face** — `.aimodel` files are large binaries; HF is
+  built for them (LFS, model cards, versioning). GitHub is poor for >100 MB blobs.
+  Publish the `.aimodel` + `pieces.txt` + `MODEL_CARD.md` to an HF model repo and
+  have the convert pipeline / a download step fetch it.
+
+## License (dual)
+
+Two licenses, by artifact type:
+
+- **Code in this repo → Apache License 2.0** — see [`LICENSE`](LICENSE) and
+  [`NOTICE`](NOTICE).
+- **Model weights** (the `.aimodel` artifacts and any quantized/palettized
+  derivatives) → **[NVIDIA Open Model License Agreement](https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-open-model-license/)**,
+  as derivatives of
+  [`nvidia/nemotron-speech-streaming-en-0.6b`](https://huggingface.co/nvidia/nemotron-speech-streaming-en-0.6b)
+  (permits commercial use, redistribution, and derivatives — retain attribution +
+  the license). See [`MODEL_CARD.md`](MODEL_CARD.md).
+
+The weights are **not** Apache-licensed; keep the two clearly separated when you
+redistribute.

@@ -62,3 +62,11 @@ Caveat: this convert pipeline predates the out-of-repo `preprocess_audio` baking
 so these compressed models run only via the streaming `feed()` path (`--streaming`)
 — the batch `transcribe()` path needs the baked preprocessor. The existing Swift
 runtime loads + runs the palettized `.aimodel` as-is (no separate code needed).
+
+## License
+
+- This **conversion code** → Apache License 2.0 (repo root `LICENSE` / `NOTICE`).
+- The **`.aimodel` it produces** (and any quantized/palettized derivative) →
+  derived from `nvidia/nemotron-speech-streaming-en-0.6b`, governed by the
+  [NVIDIA Open Model License](https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-open-model-license/).
+  Retain attribution + the license when redistributing. See `../MODEL_CARD.md`.

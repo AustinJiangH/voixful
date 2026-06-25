@@ -1,6 +1,9 @@
 # scripts/
 
-Top-level driver scripts for the `coreai-nemotron-asr` project. Each script is
+> Code in this repo is Apache-2.0 (root `LICENSE`/`NOTICE`); model weights are
+> under the NVIDIA Open Model License (see `../MODEL_CARD.md`).
+
+Top-level driver scripts for the Voixful project. Each script is
 self-contained, prints `[smoke] ...` (or equivalent) lines so output is
 greppable, and exits non-zero on hard failure.
 

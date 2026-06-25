@@ -15,6 +15,7 @@ pre-release pin (`coreai-torch` depends on `coreai-core==1.0.0b1`, which plain
 uv venv -p 3.12 .venv
 source .venv/bin/activate
 uv pip install -e .
+uv pip install "pydantic>=2.6,<2.10"   # required for the --quantize path; see ../README.md
 ```
 
 **Alternative (pip):** plain pip works with `--pre`:
@@ -50,9 +51,15 @@ Optional flags:
 - `--model-id` (default `nvidia/nemotron-3.5-asr-streaming-0.6b`)
 - `--max-chunk-frames` (default `112`, i.e., 1120 ms at a 10 ms hop)
 
-Output: a single FP16 `.aimodel` at `--output`. No `coreai_opt` is invoked; PLAN.md
-§3 Step 5b documents the conditional quantization path if Phase 6 measures
-RTF > 0.3 on M2 or iOS deployment lands in scope.
+Output: a single FP16 `.aimodel` at `--output`. Add `--quantize palette4` for the
+4-bit palettized model (7× smaller disk + RAM, faster) — see `../README.md`.
+
+## License
+
+- This **conversion code** → Apache License 2.0 (repo root `LICENSE` / `NOTICE`).
+- The **`.aimodel` weights** → derived from `nvidia/nemotron-speech-streaming-en-0.6b`,
+  governed by the [NVIDIA Open Model License](https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-open-model-license/).
+  See `../../MODEL_CARD.md`.
 
 ## Verify parity
 

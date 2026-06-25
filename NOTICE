@@ -1,0 +1,32 @@
+Voixful
+Copyright 2026 Voixful
+
+This product includes software developed by the Voixful project, licensed under
+the Apache License, Version 2.0 (see LICENSE).
+
+================================================================================
+Model weights — NOT covered by Apache 2.0
+================================================================================
+
+The Core AI model artifacts (`.aimodel` directories) and any quantized or
+palettized derivatives distributed or referenced by this project are DERIVED
+FROM:
+
+    nvidia/nemotron-speech-streaming-en-0.6b
+    https://huggingface.co/nvidia/nemotron-speech-streaming-en-0.6b
+
+and are governed by the NVIDIA Open Model License Agreement, NOT by the Apache
+License that covers this repository's source code:
+
+    https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-open-model-license/
+
+Retain this attribution and a copy of that license when redistributing the
+weights or any derivative of them. See MODEL_CARD.md.
+
+================================================================================
+Conversion tooling
+================================================================================
+
+The `.aimodel` artifacts are produced with Apple's Core AI authoring and
+optimization tooling (`coreai-torch`, `coreai-opt`) and NVIDIA NeMo. Those tools
+place no license claim on their output.

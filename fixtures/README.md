@@ -1,5 +1,10 @@
 # Test fixtures
 
+> **License:** repo code is Apache-2.0 (root `LICENSE`/`NOTICE`); the `aimodel/`
+> weights are derived from `nvidia/nemotron-speech-streaming-en-0.6b` under the
+> [NVIDIA Open Model License](https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-open-model-license/)
+> (see `../MODEL_CARD.md`); LibriSpeech is third-party and not redistributed here.
+
 The `fixtures/` directory holds the small data files the test suite consumes.
 None of these are committed by default — every fixture is either user-generated
 (per the recipes below) or sourced from a third-party corpus the project can't
