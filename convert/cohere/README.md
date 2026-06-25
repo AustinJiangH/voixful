@@ -62,19 +62,30 @@ the same way the Nemotron / Parakeet pipelines do. The decoder is small (~0.3 GB
 
 ## Status
 
-**Blueprint validated; conversion blocked on weight access.** The full encode /
-decode_step I/O (above) was confirmed from the ungated CoreML mirror, and the
-stateless-external-cache design removes the main feasibility risk. Still needed to
-convert: the **upstream weights + `modeling_cohere_asr.py`**, which are **gated**
-(`CohereLabs/cohere-transcribe-03-2026`, `trust_remote_code=True`).
+**Works end-to-end.** The converter emits a 2-function `.aimodel`
+(`encode` + `decode_step`), and `NemotronASR.CohereEngine` runs it on-device:
 
-Next steps, once the HF account is on the repo's authorized list:
+```sh
+voixful cohere clip.wav --model cohere-palette4.aimodel --pieces cohere-pieces.txt
+```
 
-1. Download the upstream; read `modeling_cohere_asr.py` for the exact module structure.
-2. Write `cohere_convert/` wrappers exporting `encode` + `decode_step` at the shapes
-   above; palettize the encoder.
-3. Build the Swift AED runtime: encode once → autoregressive `decode_step` loop
-   threading the 16 caches, greedy + EOS, byte-fallback detokenize, sliding window.
+FP16 and palette4 both produce torch-identical transcripts; palettizing the encoder
+(>90% of the params) cuts the asset 7.6 GB → 1.5 GB and peak RSS 15.4 GB → ~3 GB.
+
+### Conversion gotcha — the `coreai_torch` broadcast bug
+
+The decoder derailed (correct for ~15 tokens, then a greedy loop) until we traced it
+to a real `coreai_torch 0.4.0` bug: it **mis-converts a broadcast multiply across a
+size-1 dim**. The external-cache write `cache*(1-sel) + new*sel` broadcasts the new
+`[1,H,1,D]` K/V against the `[1,H,M,D]` cache; under conversion the new value leaked
+into *every* cache slot (logits off by ~10, enough to flip borderline greedy tokens).
+Fix: materialize both operands to `[1,H,M,D]` with `.repeat(...)` (a real copy) before
+the multiply — never a stride-0 broadcast view. Bisection that found it: embedding
+bit-exact → QKV projection bit-exact → cache-write off by 5.
+
+Two more decoder specifics: the wrapper spells out attention manually (not
+`F.scaled_dot_product_attention`) and emits raw logits (skips the head's
+`log_softmax`, argmax-identical) — both keep the conversion clean.
 
 ## License
 

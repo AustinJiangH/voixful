@@ -19,8 +19,47 @@ struct Voixful: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "voixful",
         abstract: "Voixful on-device speech — a SpeechAnalyzer-shaped API over local models.",
-        subcommands: [Transcribe.self, Mic.self, Parakeet.self, Languages.self]
+        subcommands: [Transcribe.self, Mic.self, Parakeet.self, Cohere.self, Languages.self]
     )
+}
+
+// MARK: - cohere (attention encoder-decoder backend)
+
+struct Cohere: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        abstract: "Transcribe a file with Cohere Transcribe 2B (attention encoder-decoder)."
+    )
+
+    @Argument(help: "Input audio file (WAV/CAF/AIFF/… — any rate/format).")
+    var input: String
+
+    @Option(help: "Path to the Cohere .aimodel directory.")
+    var model: String
+
+    @Option(help: "Path to the Cohere SentencePiece vocab (one piece per line).")
+    var pieces: String
+
+    @Option(help: "Write the transcript here (default: stdout).")
+    var output: String?
+
+    func run() async throws {
+        let samples = try loadMono16k(path: input)
+        let engine: CohereEngine
+        do {
+            engine = try await CohereEngine(
+                modelURL: URL(fileURLWithPath: model),
+                piecesURL: URL(fileURLWithPath: pieces)
+            )
+        } catch {
+            throw ValidationError("could not load Cohere engine: \(error)")
+        }
+        let text = try await engine.transcribe(audio: samples)
+        if let output {
+            try text.write(toFile: output, atomically: true, encoding: .utf8)
+        } else {
+            print(text)
+        }
+    }
 }
 
 // MARK: - parakeet (full-context TDT backend — FluidAudio comparison)
@@ -62,9 +101,11 @@ struct Parakeet: AsyncParsableCommand {
             print(text)
         }
     }
+}
 
-    /// Decode any audio file to 16 kHz mono Float samples for the engine.
-    private func loadMono16k(path: String) throws -> [Float] {
+/// Decode any audio file to 16 kHz mono Float samples for the engine.
+/// Shared by the `parakeet` and `cohere` subcommands.
+private func loadMono16k(path: String) throws -> [Float] {
         let file = try AVAudioFile(forReading: URL(fileURLWithPath: path))
         guard let target = AVAudioFormat(
             commonFormat: .pcmFormatFloat32,
@@ -109,7 +150,6 @@ struct Parakeet: AsyncParsableCommand {
         let n = Int(outBuf.frameLength)
         guard let ch = outBuf.floatChannelData else { return [] }
         return Array(UnsafeBufferPointer(start: ch[0], count: n))
-    }
 }
 
 // MARK: - transcribe

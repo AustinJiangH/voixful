@@ -64,6 +64,16 @@ class CohereDecoderStepForCoreAI(nn.Module):
         b, _, t, _ = x.shape
         return x.transpose(1, 2).contiguous().view(b, t, self.hidden_size)
 
+    @staticmethod
+    def _attention(q, k, v, attn_mask, scale):
+        # Manual scaled-dot-product attention. coreai_torch mis-converts
+        # F.scaled_dot_product_attention (the decoder logits came out off by ~10
+        # vs torch while the manual-attention encoder was bit-exact), so we spell
+        # it out: scores = (q·kᵀ)·scale + additive_mask -> softmax -> ·v.
+        scores = torch.matmul(q, k.transpose(-2, -1)) * scale + attn_mask
+        weights = torch.softmax(scores, dim=-1)
+        return torch.matmul(weights, v)
+
     def forward(
         self,
         input_id: torch.Tensor,            # [1,1] int
@@ -81,8 +91,12 @@ class CohereDecoderStepForCoreAI(nn.Module):
 
         # One-hot over the cache axis so we write new K/V at `position_id` without
         # a dynamic scatter (export-friendly): cache' = cache*(1-oh) + new*oh.
-        oh = F.one_hot(position_id.view(-1), num_classes=self.max_cache_len)  # [1,M]
-        oh = oh.to(h.dtype).view(1, 1, self.max_cache_len, 1)               # [1,1,M,1]
+        idx = torch.arange(self.max_cache_len, device=h.device).view(1, -1)  # [1,M]
+        sel = (idx == position_id.view(-1, 1)).to(h.dtype)                   # [1,M]
+        # Materialize the selector to full [1,H,M,D] with repeat, NOT a stride-0
+        # broadcast view: coreai_torch mis-converts broadcast multiplies of a
+        # size-1 dim (the new K/V leaked into every cache slot, off by ~5).
+        oh = sel.view(1, 1, self.max_cache_len, 1).repeat(1, self.num_heads, 1, self.head_dim)
 
         new_k, new_v = [], []
         for i, layer in enumerate(self.layers):
@@ -93,13 +107,13 @@ class CohereDecoderStepForCoreAI(nn.Module):
             q = self._heads(a, a.query_net(hn))   # [1,H,1,D]
             nk = self._heads(a, a.key_net(hn))    # [1,H,1,D]
             nv = self._heads(a, a.value_net(hn))
-            kc = k_cache[i] * (1.0 - oh) + nk * oh   # [1,H,M,D]
-            vc = v_cache[i] * (1.0 - oh) + nv * oh
+            nk_full = nk.repeat(1, 1, self.max_cache_len, 1)  # [1,H,M,D] (real copy)
+            nv_full = nv.repeat(1, 1, self.max_cache_len, 1)
+            kc = k_cache[i] * (1.0 - oh) + nk_full * oh
+            vc = v_cache[i] * (1.0 - oh) + nv_full * oh
             new_k.append(kc)
             new_v.append(vc)
-            attn = F.scaled_dot_product_attention(
-                q, kc, vc, attn_mask=self_attention_mask, dropout_p=0.0, scale=a.scale
-            )
+            attn = self._attention(q, kc, vc, self_attention_mask, a.scale)
             h = residual + a.out_projection(self._merge(attn))
 
             # --- cross-attention (recomputed from encoder each step) ---
@@ -109,9 +123,7 @@ class CohereDecoderStepForCoreAI(nn.Module):
             qx = self._heads(c, c.query_net(hn))                 # [1,H,1,D]
             kx = self._heads(c, c.key_net(encoder_hidden_states))   # [1,H,T_enc,D]
             vx = self._heads(c, c.value_net(encoder_hidden_states))
-            cross = F.scaled_dot_product_attention(
-                qx, kx, vx, attn_mask=cross_attention_mask, dropout_p=0.0, scale=c.scale
-            )
+            cross = self._attention(qx, kx, vx, cross_attention_mask, c.scale)
             h = residual + c.out_projection(self._merge(cross))
 
             # --- feed-forward ---
@@ -119,5 +131,8 @@ class CohereDecoderStepForCoreAI(nn.Module):
             h = residual + layer.third_sub_layer(layer.layer_norm_3(h))
 
         h = self.final_layer_norm(h)
-        logits = self.head(h)  # [1,1,16384] (log-softmax)
+        # Raw logits (skip the head's log_softmax): argmax is identical but avoids
+        # a numerically heavy 16384-class log_softmax that can flip a borderline
+        # greedy decision under Core AI's fp kernels.
+        logits = self.head.mlp.layer0(h)  # [1,1,16384]
         return logits, torch.stack(new_k, dim=0), torch.stack(new_v, dim=0)

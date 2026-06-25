@@ -16,8 +16,8 @@ convert/
 │   ├── pyproject.toml · README.md
 │   └── parakeet_convert/     ← convert.py / extract.py / export.py / models.py
 └── cohere/                   ← Cohere Transcribe 2B (attention encoder-decoder)
-    ├── pyproject.toml · README.md   ← planning scaffold (gated model; see README)
-    └── cohere_convert/       ← (to add: convert.py / extract.py / export.py / models.py)
+    ├── pyproject.toml · README.md   ← gated model — authenticate first (see README)
+    └── cohere_convert/       ← convert.py / extract.py / export.py / models.py
 ```
 
 Each model is self-contained (own `pyproject.toml`, own package, own license note);
