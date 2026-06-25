@@ -14,6 +14,7 @@ import VoixfulTUI
 import VoixfulNemotronStreaming
 import VoixfulParakeetTDT
 import VoixfulCohereTranscribe
+import VoixfulFullContext
 import VoixfulEngine
 
 @main

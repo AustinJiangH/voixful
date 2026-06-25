@@ -19,6 +19,8 @@ let package = Package(
         .library(name: "VoixfulNemotronStreaming", targets: ["VoixfulNemotronStreaming"]),
         .library(name: "VoixfulParakeetTDT", targets: ["VoixfulParakeetTDT"]),
         .library(name: "VoixfulCohereTranscribe", targets: ["VoixfulCohereTranscribe"]),
+        // Shared full-context (batch) transcriber lifecycle (Parakeet + Cohere).
+        .library(name: "VoixfulFullContext", targets: ["VoixfulFullContext"]),
         // Brand CLI: `voixful transcribe …`.
         .executable(name: "voixful", targets: ["VoixfulCLI"]),
 
@@ -42,6 +44,13 @@ let package = Package(
             dependencies: ["VoixfulSpeech"]
         ),
 
+        // MARK: Shared full-context (batch) transcriber — the lifecycle Parakeet
+        // and Cohere share; generic over the engine.
+        .target(
+            name: "VoixfulFullContext",
+            dependencies: ["VoixfulSpeech"]
+        ),
+
         // MARK: Per-model backends (each: core façade + the engine)
         .target(
             name: "VoixfulNemotronStreaming",
@@ -49,11 +58,11 @@ let package = Package(
         ),
         .target(
             name: "VoixfulParakeetTDT",
-            dependencies: ["VoixfulSpeech", "VoixfulEngine"]
+            dependencies: ["VoixfulSpeech", "VoixfulEngine", "VoixfulFullContext"]
         ),
         .target(
             name: "VoixfulCohereTranscribe",
-            dependencies: ["VoixfulSpeech", "VoixfulEngine"]
+            dependencies: ["VoixfulSpeech", "VoixfulEngine", "VoixfulFullContext"]
         ),
 
         // MARK: Brand CLI

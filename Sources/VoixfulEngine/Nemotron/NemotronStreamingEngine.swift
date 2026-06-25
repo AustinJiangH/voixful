@@ -106,14 +106,6 @@ public actor NemotronStreamingEngine {
 
     // MARK: - Immutable per-session inputs
 
-    /// 128-dim language one-hot, built once at init via `LangID.oneHot(language)`.
-    /// Reused on every encoder call — never reallocated, never mutated (the
-    /// encoder reads it as a regular input, not a state buffer, so the
-    /// MutableViews zero-copy semantic doesn't apply, but reusing the same
-    /// NDArray instance still avoids per-chunk allocation per Anti-pattern 4
-    /// in PLAN.md §11).
-    private let langOneHot: NDArray
-
     // MARK: - Mel preprocessor constants
 
     /// Mel bins. Mirrored from `MelExtractor`'s default (128 per PLAN.md §5).
@@ -238,10 +230,6 @@ public actor NemotronStreamingEngine {
             : fm.fileExists(atPath: siblingPieces.path) ? siblingPieces
             : parentDir.appendingPathComponent("vocab.txt")
         self.tokenizer = try Tokenizer(vocabURL: vocabURL)
-
-        // Build the language one-hot vector exactly once. Reused on every
-        // encoder call for the session's lifetime — see Anti-pattern 4.
-        self.langOneHot = LangID.oneHot(language)
     }
 
     // MARK: - start
