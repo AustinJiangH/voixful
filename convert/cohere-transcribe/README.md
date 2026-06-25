@@ -40,8 +40,8 @@ decode_step(                                 # external cache, STATELESS
     encoder_hidden_states[1,438,1024] fp32,
     attention_mask[1,1,1,108] fp32,          # causal self-attn mask (upstream flexes 1..108; we fix 108)
     cross_attention_mask[1,1,1,438] fp32,    # masks padded encoder frames
-    k_cache_0..7[1,8,108,128], v_cache_0..7[1,8,108,128]   # 8 layers, 8 heads, maxlen 108, head-dim 128
-) -> logits[1,16384], k_cache_0..7_out, v_cache_0..7_out
+    k_cache[8,1,8,108,128], v_cache[8,1,8,108,128]   # single STACKED tensor each: 8 layers, batch 1, 8 heads, maxlen 108, head-dim 128
+) -> logits[1,16384], k_cache_out, v_cache_out
 ```
 
 **Feasibility gate — resolved.** The upstream design uses an **external KV cache**
@@ -49,8 +49,9 @@ decode_step(                                 # external cache, STATELESS
 self-attention**; cross-attention K/V are recomputed each step from
 `encoder_hidden_states`. So both functions are **stateless** — no Core AI
 `MutableBuffers` required, just two fixed-shape `coreai_torch` exports (simpler than
-Parakeet's stateful LSTM). The Swift runtime owns the 16 cache tensors and threads
-them step to step. The only adaptation vs upstream: `coreai_torch 0.4.0` can't carry
+Parakeet's stateful LSTM). The Swift runtime owns the two stacked cache tensors
+(`k_cache` / `v_cache`, each `[8,1,8,108,128]`) and threads them step to step. The
+only adaptation vs upstream: `coreai_torch 0.4.0` can't carry
 a dynamic axis, so we fix `attention_mask` to `[1,1,1,108]` and rely on mask values
 (not shape) to hide future positions.
 
@@ -60,13 +61,29 @@ Core AI specializes FP16 → FP32 at load, so a 2B FP16 asset would be ~15 GB RS
 infeasible. **Palettize the encoder from the start** (4-bit ≈ ~470 MB for the encoder)
 the same way the Nemotron / Parakeet pipelines do. The decoder is small (~0.3 GB).
 
+## Setup
+
+Standalone, like the other convert dirs — `uv` + Python 3.12 + the pre-release
+Apple `coreai` wheels:
+
+```sh
+uv venv -p 3.12 .venv
+source .venv/bin/activate
+uv pip install -e .                      # pulls the pre-release coreai wheels
+uv pip install "pydantic>=2.6,<2.10"     # required for the --quantize path
+```
+
+(Plain pip works too with `--pre`: `python3.12 -m venv .venv && pip install --pre -e .`.)
+The Cohere checkpoint is **gated** — `huggingface-cli login` first.
+
 ## Status
 
 **Works end-to-end.** The converter emits a 2-function `.aimodel`
-(`encode` + `decode_step`), and `NemotronASR.CohereEngine` runs it on-device:
+(`encode` + `decode_step`), and `VoixfulEngine`'s `CohereTranscribeEngine` runs it
+on-device:
 
 ```sh
-voixful transcribe clip.wav --model cohere-palette4.aimodel
+voixful transcribe clip.wav --model cohere-transcribe-03-2026-palette4.aimodel --backend cohere
 ```
 
 FP16 and palette4 both produce torch-identical transcripts; palettizing the encoder

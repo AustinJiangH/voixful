@@ -10,11 +10,11 @@ final class CohereTests: XCTestCase {
 
     /// Write a temp pieces file (one piece per line, line index == token id) and
     /// return a tokenizer over it. Mirrors the real `cohere-pieces.txt` format.
-    private func tokenizer(_ pieces: [String]) throws -> CohereTokenizer {
+    private func tokenizer(_ pieces: [String]) throws -> SentencePieceTokenizer {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("cohere-pieces-\(UUID().uuidString).txt")
         try pieces.joined(separator: "\n").write(to: url, atomically: true, encoding: .utf8)
-        return try CohereTokenizer(piecesURL: url)
+        return try SentencePieceTokenizer(piecesURL: url)
     }
 
     // MARK: - Detokenization
@@ -59,6 +59,17 @@ final class CohereTests: XCTestCase {
     /// `count` reports the loaded vocab size (engines validate it vs the model).
     func testTokenizerCount() throws {
         XCTAssertEqual(try tokenizer(["<unk>", "a", "b", "c"]).count, 4)
+    }
+
+    /// `stripLangTags` (used by the multilingual Parakeet path) drops `<xx-YY>`
+    /// locale tags while preserving byte-fallback reassembly — the case the old
+    /// stub tokenizer got wrong (rendered `<0xNN>` literally).
+    func testStripLangTagsWithByteFallback() throws {
+        // "<es-ES> café": lang tag + ▁caf + 0xC3 + 0xA9 ("é")
+        let tok = try tokenizer(["<unk>", "<es-ES>", "\u{2581}caf", "<0xC3>", "<0xA9>"])
+        XCTAssertEqual(tok.decode([1, 2, 3, 4], stripLangTags: true), " café")
+        // Without stripping, the lang tag is not a special/byte piece, so it stays.
+        XCTAssertEqual(tok.decode([1, 2, 3, 4], stripLangTags: false), "<es-ES> café")
     }
 
     // MARK: - Encoder length formula

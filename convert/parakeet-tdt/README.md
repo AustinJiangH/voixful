@@ -20,23 +20,36 @@ Two consequences for the runtime (see below):
    **advance the encoder time index by the predicted duration** — a TDT decoder,
    not the RNN-T `GreedyRNNTDecoder`.
 
+## Setup
+
+Standalone, like the other convert dirs — `uv` + Python 3.12 + the pre-release
+Apple `coreai` wheels:
+
+```sh
+uv venv -p 3.12 .venv
+source .venv/bin/activate
+uv pip install -e .                      # pulls the pre-release coreai wheels
+uv pip install "pydantic>=2.6,<2.10"     # required for the --quantize path
+```
+
+(Plain pip works too with `--pre`: `python3.12 -m venv .venv && pip install --pre -e .`.)
+
 ## Run
 
 ```sh
-uv pip install -e . --no-deps                 # in the shared coreai venv
-uv pip install "pydantic>=2.6,<2.10" && uv pip install --pre coreai-opt   # for --quantize
-python -m parakeet_convert.convert --quantize palette4 --output parakeet-palette4.aimodel
+python -m parakeet_convert.convert --quantize palette4 --output parakeet-tdt-0.6b-v3-palette4.aimodel
 # --quantize: none | int8 | palette4 | palette6
 ```
 
 ## Status / results
 
 **Conversion + Swift runtime both work.** The converter produces a 3-function
-`.aimodel` (`encode`/`predict_step`/`join`), and `NemotronASR.ParakeetEngine` runs
-it end-to-end (full-context encode + TDT greedy decode). Drive it with:
+`.aimodel` (`encode`/`predict_step`/`join`), and `VoixfulEngine`'s
+`ParakeetTDTEngine` runs it end-to-end (full-context encode + TDT greedy decode).
+Drive it with:
 
 ```sh
-voixful transcribe clip.wav --model parakeet-palette4.aimodel
+voixful transcribe clip.wav --model parakeet-tdt-0.6b-v3-palette4.aimodel
 ```
 
 Both the FP16 and `palette4` variants produce NeMo-identical transcripts; palettizing
@@ -45,8 +58,9 @@ the Nemotron pipeline).
 
 ### Runtime gotchas (what the TDT path needs that the RNN-T path doesn't)
 
-The `ParakeetEngine` is a separate backend from `StreamingASR` because four things
-differ from the streaming Nemotron path — each was a real bug found bringing it up:
+The `ParakeetTDTEngine` is a separate backend from the streaming Nemotron engine
+because four things differ from the streaming path — each was a real bug found
+bringing it up:
 
 1. **`normalize: per_feature`.** Parakeet's preprocessor standardizes each mel bin
    to zero-mean/unit-std over the utterance (Nemotron uses `normalize: NA`). Feed

@@ -11,7 +11,7 @@ import VoixfulSpeech
 public actor ParakeetTDTTranscriber: Transcribing {
 
     // MARK: Transcribing / VoixfulSpeechModule
-    public nonisolated let moduleIdentifier = "voixful.parakeet"
+    public nonisolated let moduleIdentifier = "com.voixful.transcriber.parakeet"
     public nonisolated let modelName = "Parakeet TDT 0.6B"
     public nonisolated let locale: Locale
     public nonisolated let reportingOptions: ReportingOption

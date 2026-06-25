@@ -27,10 +27,9 @@ struct Voixful: AsyncParsableCommand {
 
 // MARK: - transcribe
 
-/// Which model backend `transcribe` should drive (DESIGN_ANALYZER_API.md §4).
-enum Backend: String, ExpressibleByArgument, CaseIterable {
-    case nemotron, parakeet, cohere
-}
+// `ModelBackend` (VoixfulEngine) is the single source of truth for the backend
+// set + the detection heuristic; expose it as a CLI option value here.
+extension ModelBackend: ExpressibleByArgument {}
 
 struct Transcribe: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
@@ -44,7 +43,7 @@ struct Transcribe: AsyncParsableCommand {
     var model: String
 
     @Option(help: "Force the model architecture (nemotron/parakeet/cohere). Default: auto-detect from the model.")
-    var backend: Backend?
+    var backend: ModelBackend?
 
     @Option(help: "SentencePiece vocab for parakeet/cohere. Default: sibling 'pieces.txt' of the model.")
     var pieces: String?
@@ -70,16 +69,7 @@ struct Transcribe: AsyncParsableCommand {
         // Read the model's functions once: drives both backend auto-detection
         // (unless --backend forces it) and the Nemotron batch-vs-streaming mode.
         let fns = try ModelBackend.assetFunctions(modelURL: modelURL)
-        let resolved: Backend
-        if let backend {
-            resolved = backend
-        } else if fns.names.contains("decode_step") {
-            resolved = .cohere
-        } else if fns.encodeHasStates {
-            resolved = .nemotron
-        } else {
-            resolved = .parakeet
-        }
+        let resolved = backend ?? ModelBackend.classify(fns)
 
         let transcriber: any Transcribing
         do {

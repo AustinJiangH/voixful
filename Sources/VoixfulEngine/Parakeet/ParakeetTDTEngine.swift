@@ -22,7 +22,7 @@ public actor ParakeetTDTEngine {
     private let encodeFn: InferenceFunction
     private let prediction: PredictionSession
     private let joiner: JoinerSession
-    private let tokenizer: Tokenizer
+    private let tokenizer: SentencePieceTokenizer
     private let melExtractor: MelExtractor
 
     // Parakeet TDT 0.6B constants (probed from the checkpoint).
@@ -56,8 +56,8 @@ public actor ParakeetTDTEngine {
         self.encodeFn = enc
         self.prediction = try await PredictionSession(model: model)
         self.joiner = try await JoinerSession(model: model)
-        let tokenizer = try Tokenizer(vocabURL: piecesURL)
-        let pieceCount = await tokenizer.count
+        let tokenizer = try SentencePieceTokenizer(piecesURL: piecesURL)
+        let pieceCount = tokenizer.count
         guard pieceCount == Self.vocab else {
             throw ASRError.modelLoadFailed(
                 "vocab mismatch: \(piecesURL.lastPathComponent) has \(pieceCount) pieces, "
@@ -122,7 +122,7 @@ public actor ParakeetTDTEngine {
                 "[parakeet] realT=\(realT) enc=\(encOut.shape) emitted=\(emitted.count)\n".utf8
             ))
         }
-        return await tokenizer.decode(tokens: emitted, stripLangTags: true)
+        return tokenizer.decode(emitted, stripLangTags: true)
     }
 
     /// TDT greedy decode over the encoder time axis.

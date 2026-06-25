@@ -20,7 +20,7 @@ import Foundation
 public actor CohereTranscribeEngine {
     private let encodeFn: InferenceFunction
     private let decodeFn: InferenceFunction
-    private let tokenizer: CohereTokenizer
+    private let tokenizer: SentencePieceTokenizer
     private let melExtractor: MelExtractor
 
     // Cohere Transcribe constants.
@@ -60,7 +60,7 @@ public actor CohereTranscribeEngine {
         }
         self.encodeFn = enc
         self.decodeFn = dec
-        let tokenizer = try CohereTokenizer(piecesURL: piecesURL)
+        let tokenizer = try SentencePieceTokenizer(piecesURL: piecesURL)
         guard tokenizer.count == Self.vocab else {
             throw ASRError.modelLoadFailed(
                 "vocab mismatch: \(piecesURL.lastPathComponent) has \(tokenizer.count) pieces, "
@@ -137,6 +137,7 @@ public actor CohereTranscribeEngine {
 
         var emitted: [Int32] = []
         var prev = Self.startToken
+        var hitEOS = false
         for pos in 0..<Self.maxCacheLen {
             inputND.setInt32(at: 0, to: prev)
             posND.setInt32(at: 0, to: Int32(pos))
@@ -172,9 +173,18 @@ public actor CohereTranscribeEngine {
             if Self.traceDecode {
                 FileHandle.standardError.write(Data("[cohere] pos=\(pos) tok=\(next)\n".utf8))
             }
-            if next == Self.eosToken { break }
+            if next == Self.eosToken { hitEOS = true; break }
             emitted.append(next)
             prev = next
+        }
+        // The decoder's self-attention cache is a fixed `maxCacheLen` slots (the
+        // model's baked CACHE_LEN). A clip whose transcript exceeds that token
+        // budget runs out of cache before emitting EOS, so the tail is silently
+        // dropped. Surface it rather than returning a quietly-truncated string.
+        if !hitEOS {
+            FileHandle.standardError.write(Data((
+                "[cohere] warning: hit the \(Self.maxCacheLen)-token decode limit without EOS — "
+                + "transcript is likely TRUNCATED (clip exceeds the model's per-window token budget).\n").utf8))
         }
         return emitted
     }

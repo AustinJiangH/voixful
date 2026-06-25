@@ -22,6 +22,7 @@ A streaming ASR model for **Apple Silicon**, converted from
 [`nvidia/nemotron-speech-streaming-en-0.6b`](https://huggingface.co/nvidia/nemotron-speech-streaming-en-0.6b)
 to Apple's **Core AI** `.aimodel` format and **4-bit k-means palettized** so the
 Neural Engine keeps the weights compressed at runtime. Used by the
+<!-- TODO: replace placeholder repo URL with the real one before publishing -->
 [Voixful](https://github.com/your-org/voixful) Swift package.
 
 ## Attribution & License
@@ -37,23 +38,24 @@ tools place no license claim on the output.
 
 ## Variants
 
+Only two variants ship: FP16 and 4-bit palettized (no standalone INT8 asset).
+
 | File | Format | Disk | Runtime RAM | Speed (5.5 s clip) |
 |---|---|---|---|---|
-| `nemotron-streaming.aimodel` | FP16 | 2.3 GB | 4.63 GB | 0.62 s |
-| `nemotron-int8.aimodel` | INT8 linear weight-only | 619 MB | 4.63 GB | 0.67 s |
-| **`nemotron-palette4.aimodel`** | **4-bit palettization** | **328 MB** | **0.66 GB** | **0.37 s** |
+| `nemotron-speech-streaming-en-0.6b-fp16.aimodel` | FP16 | 2.3 GB | 4.63 GB | 0.62 s |
+| **`nemotron-speech-streaming-en-0.6b-palette4.aimodel`** | **4-bit palettization** | **328 MB** | **0.66 GB** | **0.37 s** |
 
-Measured on **M5 Pro / macOS 27**, streaming path, same `sample.wav`. All
+Measured on **M5 Pro / macOS 27**, streaming path, same `sample.wav`. Both
 transcribe correctly. **Palettization is the recommended variant** — it's the
 format Apple's Neural Engine keeps compressed in memory (just-in-time
 decompression per layer), so it cuts **disk + RAM + latency**, not just disk.
-Linear INT8 cuts disk only (Core AI dequantizes to float at load).
 
 ## Contents
 
-Each `.aimodel` is a directory: `main.mlirb` + `main.hash` + `metadata.json`,
-containing three named functions — `encode`, `predict_step`, `join`. The
-SentencePiece vocab `pieces.txt` ships alongside and must stay next to the model.
+Each `.aimodel` is a self-contained directory: `main.mlirb` + `main.hash` +
+`metadata.json`, containing three named functions — `encode`, `predict_step`,
+`join` — plus the SentencePiece vocab `pieces.txt` bundled inside (no loose
+sibling vocab file).
 
 > Note: these conversions currently lack a baked `preprocess_audio` function, so
 > they run via the **streaming** path (the Voixful `feed()`/`mic` path). A batch
@@ -63,8 +65,8 @@ SentencePiece vocab `pieces.txt` ships alongside and must stay next to the model
 ## Usage (Voixful, Swift)
 
 ```sh
-voixful mic --model path/to/nemotron-palette4.aimodel
-voixful transcribe clip.wav --model path/to/nemotron-palette4.aimodel --streaming
+voixful mic --model path/to/nemotron-speech-streaming-en-0.6b-palette4.aimodel
+voixful transcribe clip.wav --model path/to/nemotron-speech-streaming-en-0.6b-palette4.aimodel
 ```
 
 ## How it was made
@@ -72,7 +74,7 @@ voixful transcribe clip.wav --model path/to/nemotron-palette4.aimodel --streamin
 ```sh
 # in convert/nemotron-streaming, with the coreai toolchain (pydantic<2.10):
 python -m nemotron_convert.convert --quantize palette4 \
-       --output nemotron-palette4.aimodel
+       --output nemotron-speech-streaming-en-0.6b-palette4.aimodel
 ```
 
 See the repo's `convert/README.md` and the design notes for the full recipe.

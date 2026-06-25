@@ -1,6 +1,6 @@
 # convert/ — NeMo -> torch.export -> coreai_torch
 
-Python pipeline that turns `nvidia/nemotron-3.5-asr-streaming-0.6b` into a single
+Python pipeline that turns `nvidia/nemotron-speech-streaming-en-0.6b` into a single
 multi-function `.aimodel` containing three named inference functions: `encode`,
 `predict_step`, and `join`. See `../PLAN.md` §3 for the full design rationale and §10
 for the open questions that the `VERIFY` comments throughout this package track.
@@ -48,7 +48,7 @@ python -m nemotron_convert.convert --output ./nemotron-streaming.aimodel
 
 Optional flags:
 
-- `--model-id` (default `nvidia/nemotron-3.5-asr-streaming-0.6b`)
+- `--model-id` (default `nvidia/nemotron-speech-streaming-en-0.6b`)
 - `--max-chunk-frames` (default `112`, i.e., 1120 ms at a 10 ms hop)
 
 Output: a single FP16 `.aimodel` at `--output`. Add `--quantize palette4` for the

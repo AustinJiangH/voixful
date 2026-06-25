@@ -2,9 +2,10 @@
 
 Python tooling that converts upstream ASR checkpoints into the Core AI
 `.aimodel` assets the Swift runtime loads. Organized **model by model**, mirroring
-the `Sources/` backend layout (`VoixfulNemotronStreaming`, future `VoixfulParakeetTDT`, …):
-each model's conversion is self-contained — its own `pyproject.toml` (deps differ
-per model — Nemotron needs NeMo), its own package, its own README.
+the `Sources/` backend layout (`VoixfulNemotronStreaming`, `VoixfulParakeetTDT`,
+`VoixfulCohereTranscribe`): each model's conversion is self-contained — its own
+`pyproject.toml` (deps differ per model — Nemotron needs NeMo), its own package,
+its own README.
 
 ```
 convert/
@@ -21,7 +22,7 @@ convert/
 ```
 
 Each model is self-contained (own `pyproject.toml`, own package, own license note);
-both expose `convert.py --quantize {none,int8,palette4,palette6}`.
+all expose `convert.py --quantize {none,int8,palette4,palette6}`.
 
 ## Adding a new model
 
@@ -67,7 +68,12 @@ runtime loads + runs the palettized `.aimodel` as-is (no separate code needed).
 ## License
 
 - This **conversion code** → Apache License 2.0 (repo root `LICENSE` / `NOTICE`).
-- The **`.aimodel` it produces** (and any quantized/palettized derivative) →
-  derived from `nvidia/nemotron-speech-streaming-en-0.6b`, governed by the
-  [NVIDIA Open Model License](https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-open-model-license/).
-  Retain attribution + the license when redistributing. See `../MODEL_CARD.md`.
+- The **`.aimodel` assets it produces** (and any quantized/palettized derivative)
+  inherit the license of their upstream checkpoint — one per model. Retain the
+  upstream attribution + license when redistributing; see each per-model README and
+  `../MODEL_CARD.md`:
+  - **Nemotron** (`nvidia/nemotron-speech-streaming-en-0.6b`) →
+    [NVIDIA Open Model License](https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-open-model-license/).
+  - **Parakeet** (`nvidia/parakeet-tdt-0.6b-v3`) → **CC-BY-4.0** (attribution only).
+  - **Cohere Transcribe** (`CohereLabs/cohere-transcribe-03-2026`) → its own upstream
+    license (gated model — see `cohere-transcribe/README.md`).

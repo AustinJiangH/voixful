@@ -38,11 +38,16 @@ extension ModelBackend {
         return AssetFunctions(names: names, encodeHasStates: encodeHasStates)
     }
 
-    /// Classify the asset by its function signatures (reads metadata only).
-    public static func detect(modelURL: URL) throws -> ModelBackend {
-        let fns = try assetFunctions(modelURL: modelURL)
+    /// The single backend-classification rule, over already-read functions. Both
+    /// `detect` and the CLI go through this so the heuristic lives in one place.
+    public static func classify(_ fns: AssetFunctions) -> ModelBackend {
         if fns.names.contains("decode_step") { return .cohere }
         if fns.encodeHasStates { return .nemotron }   // cache-aware streaming encoder
         return .parakeet
+    }
+
+    /// Classify the asset by its function signatures (reads metadata only).
+    public static func detect(modelURL: URL) throws -> ModelBackend {
+        classify(try assetFunctions(modelURL: modelURL))
     }
 }

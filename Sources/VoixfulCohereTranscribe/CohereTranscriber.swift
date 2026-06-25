@@ -11,7 +11,7 @@ import VoixfulSpeech
 public actor CohereTranscriber: Transcribing {
 
     // MARK: Transcribing / VoixfulSpeechModule
-    public nonisolated let moduleIdentifier = "voixful.cohere"
+    public nonisolated let moduleIdentifier = "com.voixful.transcriber.cohere"
     public nonisolated let modelName = "Cohere Transcribe 2B"
     public nonisolated let locale: Locale
     public nonisolated let reportingOptions: ReportingOption
