@@ -61,9 +61,9 @@ So for compression, palettization — not linear int8 — is the format that win
 runtime, not only on disk.
 
 Caveat: this convert pipeline predates the out-of-repo `preprocess_audio` baking,
-so these compressed models run only via the streaming `feed()` path (`--streaming`)
-— the batch `transcribe()` path needs the baked preprocessor. The existing Swift
-runtime loads + runs the palettized `.aimodel` as-is (no separate code needed).
+so these compressed models run only via the streaming `feed()` path — the batch
+`transcribe()` path needs the baked preprocessor. The existing Swift runtime loads
++ runs the palettized `.aimodel` as-is (no separate code needed).
 
 ## License
 
