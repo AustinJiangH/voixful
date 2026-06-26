@@ -1,7 +1,7 @@
 // swift-tools-version: 6.0
 // Voixful — SpeechAnalyzer-shaped on-device speech API over local models.
 // Monorepo: VoixfulSpeech (brand core) + per-model backends (VoixfulNemotronStreaming).
-// See DESIGN_ANALYZER_API.md for the topology this manifest realizes.
+// See README.md for the topology this manifest realizes.
 
 import PackageDescription
 

@@ -11,7 +11,7 @@
 // exposed via `nonisolated let` so it reads synchronously, exactly like Apple's
 // `SpeechTranscriber`.
 //
-// Two processing modes (DESIGN_ANALYZER_API.md §5):
+// Two processing modes:
 //   .batch     — strategy (A): accumulate the whole utterance, transcribe it
 //                each update. Most accurate (full reflect-padded mel context),
 //                but per-update cost grows with utterance length. Best for

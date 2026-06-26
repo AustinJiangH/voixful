@@ -6,6 +6,11 @@
 //
 // A streaming backend (Nemotron) does NOT use this — it emits volatile partials
 // per chunk and owns a different lifecycle.
+//
+// Option contract: batch backends emit exactly one final result at `finalize`, so
+// `reportingOptions.volatileResults` is a no-op here (no partials). The utterance
+// time span is always reported via `TranscriptionResult.range`; `attributeOptions`
+// inline attributes are not attached.
 
 import AVFoundation
 import Foundation

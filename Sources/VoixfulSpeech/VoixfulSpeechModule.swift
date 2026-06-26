@@ -46,9 +46,17 @@ public protocol Transcribing: VoixfulSpeechModule {
     var locale: Locale { get }
 
     /// Reporting options (volatile results, alternatives, …).
+    ///
+    /// Honored per backend: `.volatileResults` (live partials) applies only to
+    /// streaming backends. Full-context (batch) backends transcribe the whole
+    /// clip once at `finalize` and emit a single final result, so they ignore it.
     var reportingOptions: ReportingOption { get }
 
     /// Per-run attribute options (audio time range, confidence, …).
+    ///
+    /// Every backend reports the utterance time span via `TranscriptionResult.range`
+    /// regardless of this set; the options gate optional *inline* `AttributedString`
+    /// attributes, which only the streaming backend currently attaches.
     var attributeOptions: ResultAttributeOption { get }
 
     /// The live result stream. Read this to receive volatile + final results.

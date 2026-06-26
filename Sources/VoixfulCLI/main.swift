@@ -63,7 +63,7 @@ struct Transcribe: AsyncParsableCommand {
 
     func run() async throws {
         // Build the brand surface — every backend is a `Transcribing` module
-        // driven through the same `VoixfulAnalyzer` (DESIGN_ANALYZER_API.md §4).
+        // driven through the same `VoixfulAnalyzer` (see README.md).
         let modelURL = URL(fileURLWithPath: model)
         let locale = Locale(identifier: language)
 
