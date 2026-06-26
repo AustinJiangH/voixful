@@ -14,14 +14,16 @@
 
 import AVFoundation
 import Foundation
+import VoixfulEngine
 import VoixfulSpeech
 
 /// A batch ASR engine that loads from an `.aimodel` + pieces file and transcribes
 /// a complete clip in one shot. `FullContextTranscriber` adapts any conformer to
-/// the `Transcribing` façade.
+/// the `Transcribing` façade. Engines return the shared `Transcript` (same final
+/// result type as the streaming `NemotronStreamingEngine`).
 public protocol FullContextEngine: Actor {
     init(modelURL: URL, piecesURL: URL) async throws
-    func transcribe(audio: [Float]) async throws -> String
+    func transcribe(audio: [Float]) async throws -> Transcript
 
     /// Human-readable model name (e.g. "Parakeet TDT 0.6B").
     static var displayName: String { get }
@@ -90,14 +92,14 @@ public actor FullContextTranscriber<Engine: FullContextEngine>: Transcribing {
     public func finalize() async throws {
         guard let engine else { continuation.finish(); return }
         do {
-            let text = try await engine.transcribe(audio: utterance)
+            let transcript = try await engine.transcribe(audio: utterance)
             let start = utteranceStart ?? 0
             let duration = Double(samplesSeen) / 16_000.0
             let range = CMTimeRange(
                 start: CMTime(seconds: start, preferredTimescale: 1_000),
                 duration: CMTime(seconds: duration, preferredTimescale: 1_000))
             continuation.yield(TranscriptionResult(
-                text: AttributedString(text), range: range, isFinal: true))
+                text: AttributedString(transcript.text), range: range, isFinal: true))
             continuation.finish()
         } catch {
             let wrapped = VoixfulError.engine("finalize failed: \(error)")

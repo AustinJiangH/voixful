@@ -70,7 +70,7 @@ public actor ParakeetTDTEngine {
     }
 
     /// Transcribe a complete 16 kHz mono clip (full-context, one shot).
-    public func transcribe(audio: [Float]) async throws -> String {
+    public func transcribe(audio: [Float]) async throws -> Transcript {
         await prediction.reset()
         await melExtractor.reset()
 
@@ -122,7 +122,10 @@ public actor ParakeetTDTEngine {
                 "[parakeet] realT=\(realT) enc=\(encOut.shape) emitted=\(emitted.count)\n".utf8
             ))
         }
-        return tokenizer.decode(emitted, stripLangTags: true)
+        // Batch decode produces one final transcript; per-token time alignment
+        // (segments) is not surfaced yet, and language is model-auto-detected.
+        return Transcript(text: tokenizer.decode(emitted, stripLangTags: true),
+                          segments: [], language: nil)
     }
 
     /// TDT greedy decode over the encoder time axis.

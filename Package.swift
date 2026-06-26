@@ -48,7 +48,7 @@ let package = Package(
         // and Cohere share; generic over the engine.
         .target(
             name: "VoixfulFullContext",
-            dependencies: ["VoixfulSpeech"]
+            dependencies: ["VoixfulSpeech", "VoixfulEngine"]
         ),
 
         // MARK: Per-model backends (each: core façade + the engine)

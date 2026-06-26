@@ -81,7 +81,7 @@ public actor CohereTranscribeEngine {
         return max(1, min(l, tEnc))
     }
 
-    public func transcribe(audio: [Float]) async throws -> String {
+    public func transcribe(audio: [Float]) async throws -> Transcript {
         await melExtractor.reset()
 
         // Mel -> [1,128,3500], per-feature normalized over the real frames.
@@ -112,7 +112,9 @@ public actor CohereTranscribeEngine {
         }
 
         let emitted = try await decode(enc: enc, encLen: Self.encLen(useT))
-        return tokenizer.decode(emitted)
+        // Batch AED decode produces one final transcript; segments aren't surfaced
+        // and the language is model-auto-detected.
+        return Transcript(text: tokenizer.decode(emitted), segments: [], language: nil)
     }
 
     /// Greedy autoregressive decode with an external self-attention KV cache.

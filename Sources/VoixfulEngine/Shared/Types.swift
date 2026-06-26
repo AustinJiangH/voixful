@@ -44,7 +44,8 @@ public enum ASRError: Error, Sendable {
 // MARK: - Streaming output
 
 /// A streaming partial hypothesis emitted by `NemotronStreamingEngine.feed(...)` as audio
-/// chunks are consumed.
+/// chunks are consumed. Volatile (revisable) — a streaming-only concept; the
+/// full-context backends produce no partials, only a final `Transcript`.
 ///
 /// `stableUntilToken` is the index in `text` (token index, not character index)
 /// up to which the hypothesis is considered stable — i.e., the right-context
@@ -73,8 +74,11 @@ public struct PartialHypothesis: Sendable {
 
 // MARK: - Final transcript
 
-/// The final transcript returned by `NemotronStreamingEngine.finish()` once the audio
-/// stream is closed.
+/// The final transcript every backend returns — `NemotronStreamingEngine.finish()`
+/// (and its batch `transcribe`), `ParakeetTDTEngine.transcribe`, and
+/// `CohereTranscribeEngine.transcribe`. The shared final-result type across all
+/// three architectures. `segments` may be empty where time alignment isn't yet
+/// surfaced (the full-context backends).
 public struct Transcript: Sendable {
     /// The full detokenized transcript text, including any whitespace and
     /// punctuation produced by the model.

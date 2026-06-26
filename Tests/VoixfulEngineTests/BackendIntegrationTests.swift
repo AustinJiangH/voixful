@@ -124,7 +124,7 @@ final class BackendIntegrationTests: XCTestCase {
         try require(model)
         let engine = try await ParakeetTDTEngine(
             modelURL: model, piecesURL: model.appendingPathComponent("pieces.txt"))
-        let text = try await engine.transcribe(audio: sampleAudio())
+        let text = try await engine.transcribe(audio: sampleAudio()).text
         XCTAssertTrue(text.lowercased().contains("quick brown fox"),
                       "parakeet transcript: '\(text)'")
     }
@@ -135,7 +135,7 @@ final class BackendIntegrationTests: XCTestCase {
         try require(model)
         let engine = try await CohereTranscribeEngine(
             modelURL: model, piecesURL: model.appendingPathComponent("pieces.txt"))
-        let text = try await engine.transcribe(audio: sampleAudio())
+        let text = try await engine.transcribe(audio: sampleAudio()).text
         XCTAssertTrue(text.lowercased().contains("quick brown fox"),
                       "cohere transcript: '\(text)'")
     }
