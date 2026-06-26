@@ -10,7 +10,7 @@ public actor VoixfulAnalyzer {
     private let modules: [any VoixfulSpeechModule]
     private var pump: Task<Void, Error>?
 
-    /// Construct with the modules to run (e.g. `[NemotronTranscriber(...)]`).
+    /// Construct with the modules to run (e.g. `[NemotronStreamingTranscriber(...)]`).
     /// Mirrors `SpeechAnalyzer(modules:)`.
     public init(modules: [any VoixfulSpeechModule]) {
         self.modules = modules

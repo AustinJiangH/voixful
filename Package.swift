@@ -1,7 +1,7 @@
 // swift-tools-version: 6.0
 // Voixful — SpeechAnalyzer-shaped on-device speech API over local models.
-// Monorepo: VoixfulSpeech (brand core) + per-model backends (VoixfulNemotron).
-// See DESIGN_ANALYZER_API.md for the topology this manifest realizes.
+// Monorepo: VoixfulSpeech (brand core) + per-model backends (VoixfulNemotronStreaming).
+// See README.md for the topology this manifest realizes.
 
 import PackageDescription
 
@@ -15,14 +15,18 @@ let package = Package(
         .library(name: "VoixfulSpeech", targets: ["VoixfulSpeech"]),
         // Model-agnostic live terminal UI (mic session) — shared by every backend's CLI.
         .library(name: "VoixfulTUI", targets: ["VoixfulTUI"]),
-        // Nemotron backend — one model behind the brand surface.
-        .library(name: "VoixfulNemotron", targets: ["VoixfulNemotron"]),
+        // Per-model backends — each a `Transcribing` conformer behind the façade.
+        .library(name: "VoixfulNemotronStreaming", targets: ["VoixfulNemotronStreaming"]),
+        .library(name: "VoixfulParakeetTDT", targets: ["VoixfulParakeetTDT"]),
+        .library(name: "VoixfulCohereTranscribe", targets: ["VoixfulCohereTranscribe"]),
+        // Shared full-context (batch) transcriber lifecycle (Parakeet + Cohere).
+        .library(name: "VoixfulFullContext", targets: ["VoixfulFullContext"]),
         // Brand CLI: `voixful transcribe …`.
         .executable(name: "voixful", targets: ["VoixfulCLI"]),
 
-        // Existing engine library + legacy CLI (mic/file), kept during migration.
-        .library(name: "NemotronASR", targets: ["NemotronASR"]),
-        .executable(name: "nemotron-asr", targets: ["NemotronASRCLI"]),
+        // Core AI engine layer — shared runtimes for every model (Nemotron RNN-T,
+        // Parakeet TDT, Cohere AED) plus shared mel / tokenizer / NDArray infra.
+        .library(name: "VoixfulEngine", targets: ["VoixfulEngine"]),
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-argument-parser", from: "1.4.0"),
@@ -40,10 +44,25 @@ let package = Package(
             dependencies: ["VoixfulSpeech"]
         ),
 
-        // MARK: Nemotron backend (depends on core + the engine)
+        // MARK: Shared full-context (batch) transcriber — the lifecycle Parakeet
+        // and Cohere share; generic over the engine.
         .target(
-            name: "VoixfulNemotron",
-            dependencies: ["VoixfulSpeech", "NemotronASR"]
+            name: "VoixfulFullContext",
+            dependencies: ["VoixfulSpeech", "VoixfulEngine"]
+        ),
+
+        // MARK: Per-model backends (each: core façade + the engine)
+        .target(
+            name: "VoixfulNemotronStreaming",
+            dependencies: ["VoixfulSpeech", "VoixfulEngine"]
+        ),
+        .target(
+            name: "VoixfulParakeetTDT",
+            dependencies: ["VoixfulSpeech", "VoixfulEngine", "VoixfulFullContext"]
+        ),
+        .target(
+            name: "VoixfulCohereTranscribe",
+            dependencies: ["VoixfulSpeech", "VoixfulEngine", "VoixfulFullContext"]
         ),
 
         // MARK: Brand CLI
@@ -52,8 +71,10 @@ let package = Package(
             dependencies: [
                 "VoixfulSpeech",
                 "VoixfulTUI",
-                "VoixfulNemotron",
-                "NemotronASR",
+                "VoixfulNemotronStreaming",
+                "VoixfulParakeetTDT",
+                "VoixfulCohereTranscribe",
+                "VoixfulEngine",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ],
             // Embed an Info.plist (with NSMicrophoneUsageDescription) into the
@@ -70,21 +91,14 @@ let package = Package(
             ]
         ),
 
-        // MARK: Existing engine + legacy CLI + tests
+        // MARK: Core AI engine (all model runtimes) + tests
         .target(
-            name: "NemotronASR",
+            name: "VoixfulEngine",
             dependencies: []
         ),
-        .executableTarget(
-            name: "NemotronASRCLI",
-            dependencies: [
-                "NemotronASR",
-                .product(name: "ArgumentParser", package: "swift-argument-parser"),
-            ]
-        ),
         .testTarget(
-            name: "NemotronASRTests",
-            dependencies: ["NemotronASR"]
+            name: "VoixfulEngineTests",
+            dependencies: ["VoixfulEngine"]
         ),
     ]
 )

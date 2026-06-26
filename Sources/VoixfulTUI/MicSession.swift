@@ -35,7 +35,7 @@ private func installMicSignalHandler() {
 /// Run a live microphone transcription session until the user presses Ctrl+C.
 ///
 /// - Parameters:
-///   - transcriber: any backend's `Transcribing` module (e.g. `NemotronTranscriber`),
+///   - transcriber: any backend's `Transcribing` module (e.g. `NemotronStreamingTranscriber`),
 ///     already configured for streaming with `.volatileResults`.
 ///   - debug: when `true`, bypasses the full-screen UI so a backend's own
 ///     per-chunk diagnostics (printed to stderr) stay readable.

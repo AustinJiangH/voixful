@@ -1,34 +1,48 @@
 # Voixful
 
-A **SpeechAnalyzer-shaped** on-device speech API for Apple Silicon, with a local
-Nemotron 3.5 ASR backend running through **Core AI** (the WWDC 2026 framework that
-succeeds Core ML for custom models). Mirrors Apple's `SpeechAnalyzer` /
-`SpeechTranscriber` so developers can adopt it with near-mechanical renames — but
-runs your own model, fully on device, on the ANE/GPU.
+A **SpeechAnalyzer-shaped** on-device speech API for Apple Silicon, with local ASR
+backends running through **Core AI** (the WWDC 2026 framework that succeeds Core ML
+for custom models). Mirrors Apple's `SpeechAnalyzer` / `SpeechTranscriber` so
+developers can adopt it with near-mechanical renames — but runs your own model,
+fully on device, on the ANE/GPU.
 
 ## What's here
+
+Three ASR backends ship today, spanning three architectures:
+
+- **Nemotron** — streaming RNN-T (`nvidia/nemotron-speech-streaming-en-0.6b`, vocab 1024).
+- **Parakeet** — full-context TDT (`nvidia/parakeet-tdt-0.6b-v3`, vocab 8192).
+- **Cohere Transcribe** — attention encoder-decoder / AED (`CohereLabs/cohere-transcribe-03-2026`, vocab 16384).
+
+The Swift package layers them behind one model-agnostic façade:
 
 - **`VoixfulSpeech`** — the brand core (model-agnostic): `VoixfulAnalyzer`, the
   `VoixfulSpeechModule` / `Transcribing` protocols, `AnalyzerInput`,
   `TranscriptionResult`. Depends on no model.
-- **`VoixfulNemotron`** — the Nemotron backend: `NemotronTranscriber: Transcribing`
-  wrapping the streaming RNN-T engine.
+- **`VoixfulEngine`** — the engines themselves, organized per architecture under
+  `Nemotron/`, `Parakeet/`, `Cohere/`, and `Shared/`.
+- **`VoixfulNemotronStreaming`** / **`VoixfulParakeetTDT`** / **`VoixfulCohereTranscribe`**
+  — thin per-architecture façade targets, each exposing a `Transcribing` conformer
+  over its engine.
 - **`VoixfulTUI`** — a reusable live-mic terminal UI (used by the CLI; works for
   any backend).
-- **`voixful`** CLI — `transcribe`, `mic`, `languages`.
-- **`convert/`** — the Python pipeline that produces the Core AI `.aimodel`
-  (NeMo → `torch.export` → `coreai_torch`), incl. **encoder compression**.
-- Legacy `NemotronASR` library + `nemotron-asr` CLI (kept during migration) and a
-  SwiftUI demo in `Demos/`.
+- **`VoixfulCLI`** — the `voixful` executable: `transcribe`, `mic`, `languages`.
+- **`convert/`** — the Python pipelines that produce the Core AI `.aimodel` assets
+  (upstream checkpoint → `torch.export` → `coreai_torch`), one dir per model, incl.
+  **encoder compression**.
+- A SwiftUI demo in `Demos/`.
 
 ## Quick start
 
 ```sh
 swift build -c release
-.build/release/voixful mic        --model path/to/model.aimodel        # live mic
-.build/release/voixful transcribe clip.wav --model path/to/model.aimodel --streaming
+.build/release/voixful mic        --model path/to/nemotron-speech-streaming-en-0.6b-palette4.aimodel   # live mic
+.build/release/voixful transcribe clip.wav --model path/to/nemotron-speech-streaming-en-0.6b-palette4.aimodel
 .build/release/voixful languages
 ```
+
+`voixful transcribe` **auto-detects** the backend from the `.aimodel`; override
+with `--backend nemotron|parakeet|cohere` if needed.
 
 The model `.aimodel` is **not** committed (it's gitignored, ~hundreds of MB to
 GBs). Get it from Hugging Face (see [Distribution](#distribution)) or regenerate
@@ -61,12 +75,15 @@ voixful/
 ├── Sources/
 │   ├── VoixfulSpeech/          # brand core (analyzer + protocols + types)
 │   ├── VoixfulTUI/             # reusable live-mic terminal UI
-│   ├── VoixfulNemotron/        # NemotronTranscriber : Transcribing
-│   ├── VoixfulCLI/             # `voixful` executable
-│   ├── NemotronASR/            # streaming RNN-T engine (mel, sessions, decoder)
-│   └── NemotronASRCLI/         # legacy `nemotron-asr` executable
+│   ├── VoixfulEngine/          # engines: Nemotron/ Parakeet/ Cohere/ Shared/
+│   ├── VoixfulNemotronStreaming/   # NemotronStreamingTranscriber : Transcribing
+│   ├── VoixfulParakeetTDT/         # ParakeetTDTTranscriber : Transcribing
+│   ├── VoixfulCohereTranscribe/    # CohereTranscriber : Transcribing
+│   └── VoixfulCLI/             # `voixful` executable
 ├── convert/                    # model conversion, one dir per model
-│   └── nemotron/               # NeMo → coreai_torch → .aimodel (+ --quantize)
+│   ├── nemotron-streaming/     # NeMo → coreai_torch → .aimodel (+ --quantize)
+│   ├── parakeet-tdt/           # full-context TDT pipeline
+│   └── cohere-transcribe/      # AED pipeline
 ├── Tests/ · scripts/ · Demos/ · fixtures/
 ```
 

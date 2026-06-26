@@ -2,7 +2,7 @@
 //
 // `VoixfulSpeechModule` is the analyzer↔module contract (audio in). `Transcribing`
 // refines it with the transcription result stream (results out). Concrete
-// modules — `NemotronTranscriber` and future backends — live in their own
+// modules — `NemotronStreamingTranscriber` and future backends — live in their own
 // targets and conform to `Transcribing`. This is what makes models swappable
 // under one brand: the analyzer only knows the protocol.
 
@@ -46,9 +46,17 @@ public protocol Transcribing: VoixfulSpeechModule {
     var locale: Locale { get }
 
     /// Reporting options (volatile results, alternatives, …).
+    ///
+    /// Honored per backend: `.volatileResults` (live partials) applies only to
+    /// streaming backends. Full-context (batch) backends transcribe the whole
+    /// clip once at `finalize` and emit a single final result, so they ignore it.
     var reportingOptions: ReportingOption { get }
 
     /// Per-run attribute options (audio time range, confidence, …).
+    ///
+    /// Every backend reports the utterance time span via `TranscriptionResult.range`
+    /// regardless of this set; the options gate optional *inline* `AttributedString`
+    /// attributes, which only the streaming backend currently attaches.
     var attributeOptions: ResultAttributeOption { get }
 
     /// The live result stream. Read this to receive volatile + final results.

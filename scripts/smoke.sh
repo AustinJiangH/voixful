@@ -6,10 +6,11 @@ cd "$ROOT"
 
 echo "[smoke] Swift build"
 swift build >/dev/null
-echo "[smoke] step build: PASS"
+echo "[smoke] build: PASS"
 
-echo "[smoke] Swift smoke command (synthetic audio)"
-swift run nemotron-asr smoke
-
-echo "[smoke] Swift tests"
+echo "[smoke] Swift tests (model-free tests run; fixture-gated ones XCTSkip)"
 swift test 2>&1 | tail -2
+
+echo "[smoke] PASS — wiring is sane."
+echo "[smoke] For an end-to-end run against the .aimodel assets, use:"
+echo "[smoke]   scripts/verify-backends.sh [MODELS_DIR]"

@@ -2,23 +2,27 @@
 
 Python tooling that converts upstream ASR checkpoints into the Core AI
 `.aimodel` assets the Swift runtime loads. Organized **model by model**, mirroring
-the `Sources/` backend layout (`VoixfulNemotron`, future `VoixfulParakeet`, …):
-each model's conversion is self-contained — its own `pyproject.toml` (deps differ
-per model — Nemotron needs NeMo), its own package, its own README.
+the `Sources/` backend layout (`VoixfulNemotronStreaming`, `VoixfulParakeetTDT`,
+`VoixfulCohereTranscribe`): each model's conversion is self-contained — its own
+`pyproject.toml` (deps differ per model — Nemotron needs NeMo), its own package,
+its own README.
 
 ```
 convert/
 ├── README.md                 ← you are here (brand overview)
-├── nemotron/                 ← Nemotron 3.5 ASR Streaming 0.6B (RNN-T, streaming)
+├── nemotron-streaming/                 ← Nemotron 3.5 ASR Streaming 0.6B (RNN-T, streaming)
 │   ├── pyproject.toml · README.md
 │   └── nemotron_convert/     ← convert.py / extract.py / export.py / models.py / …
-└── parakeet/                 ← Parakeet TDT 0.6B (TDT, full-context)
-    ├── pyproject.toml · README.md
-    └── parakeet_convert/     ← convert.py / extract.py / export.py / models.py
+├── parakeet-tdt/                 ← Parakeet TDT 0.6B (TDT, full-context)
+│   ├── pyproject.toml · README.md
+│   └── parakeet_convert/     ← convert.py / extract.py / export.py / models.py
+└── cohere-transcribe/                   ← Cohere Transcribe 2B (attention encoder-decoder)
+    ├── pyproject.toml · README.md   ← gated model — authenticate first (see README)
+    └── cohere_convert/       ← convert.py / extract.py / export.py / models.py
 ```
 
 Each model is self-contained (own `pyproject.toml`, own package, own license note);
-both expose `convert.py --quantize {none,int8,palette4,palette6}`.
+all expose `convert.py --quantize {none,int8,palette4,palette6}`.
 
 ## Adding a new model
 
@@ -57,14 +61,19 @@ So for compression, palettization — not linear int8 — is the format that win
 runtime, not only on disk.
 
 Caveat: this convert pipeline predates the out-of-repo `preprocess_audio` baking,
-so these compressed models run only via the streaming `feed()` path (`--streaming`)
-— the batch `transcribe()` path needs the baked preprocessor. The existing Swift
-runtime loads + runs the palettized `.aimodel` as-is (no separate code needed).
+so these compressed models run only via the streaming `feed()` path — the batch
+`transcribe()` path needs the baked preprocessor. The existing Swift runtime loads
++ runs the palettized `.aimodel` as-is (no separate code needed).
 
 ## License
 
 - This **conversion code** → Apache License 2.0 (repo root `LICENSE` / `NOTICE`).
-- The **`.aimodel` it produces** (and any quantized/palettized derivative) →
-  derived from `nvidia/nemotron-speech-streaming-en-0.6b`, governed by the
-  [NVIDIA Open Model License](https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-open-model-license/).
-  Retain attribution + the license when redistributing. See `../MODEL_CARD.md`.
+- The **`.aimodel` assets it produces** (and any quantized/palettized derivative)
+  inherit the license of their upstream checkpoint — one per model. Retain the
+  upstream attribution + license when redistributing; see each per-model README and
+  `../MODEL_CARD.md`:
+  - **Nemotron** (`nvidia/nemotron-speech-streaming-en-0.6b`) →
+    [NVIDIA Open Model License](https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-open-model-license/).
+  - **Parakeet** (`nvidia/parakeet-tdt-0.6b-v3`) → **CC-BY-4.0** (attribution only).
+  - **Cohere Transcribe** (`CohereLabs/cohere-transcribe-03-2026`) → its own upstream
+    license (gated model — see `cohere-transcribe/README.md`).
