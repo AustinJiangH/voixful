@@ -204,6 +204,17 @@ def main(argv: list[str] | None = None) -> int:
     # Bundle the SentencePiece vocab inside the .aimodel so the runtime is
     # self-contained (StreamingASR reads <model>/pieces.txt first).
     pieces = list(modules["tokenizer"].vocab)
+    # Fail-fast: the English-only Nemotron checkpoint has a 1024-token vocab. If a
+    # model/tooling swap changes this, abort at convert time rather than shipping an
+    # asset the Swift runtime later rejects (vocab mismatch vs the joiner's 1025-wide
+    # logits = 1024 tokens + blank).
+    EXPECTED_VOCAB = 1024
+    assert len(pieces) == EXPECTED_VOCAB, (
+        f"pieces.txt vocab mismatch: got {len(pieces)} pieces, expected "
+        f"{EXPECTED_VOCAB} for nvidia/nemotron-speech-streaming-en-0.6b. "
+        "A model or tokenizer swap changed the vocab — fix the architecture "
+        "constants before shipping this asset."
+    )
     (output_path / "pieces.txt").write_text("\n".join(pieces) + "\n", encoding="utf-8")
     print(f"Wrote {output_path}/pieces.txt ({len(pieces)} pieces) — self-contained.")
 

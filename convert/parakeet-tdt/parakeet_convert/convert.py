@@ -125,6 +125,15 @@ def main(argv: list[str] | None = None) -> int:
     # Bundle the SentencePiece vocab inside the .aimodel so the runtime is
     # self-contained (the CLI reads <model>/pieces.txt; a wrong vocab errors).
     pieces = list(modules["tokenizer"].vocab)
+    # Fail-fast: Parakeet-TDT uses an 8192-token SentencePiece vocab. If a model or
+    # tokenizer swap changes this, abort at convert time rather than shipping an asset
+    # the Swift runtime later rejects on a vocab-size mismatch.
+    EXPECTED_VOCAB = 8192
+    assert len(pieces) == EXPECTED_VOCAB, (
+        f"pieces.txt vocab mismatch: got {len(pieces)} pieces, expected "
+        f"{EXPECTED_VOCAB} for Parakeet-TDT. A model or tokenizer swap changed the "
+        "vocab — fix the architecture constants before shipping this asset."
+    )
     (output_path / "pieces.txt").write_text("\n".join(pieces) + "\n", encoding="utf-8")
 
     print(f"Wrote {output_path} (quantize={args.quantize}) + pieces.txt ({len(pieces)}).")

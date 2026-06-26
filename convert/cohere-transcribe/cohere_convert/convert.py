@@ -86,6 +86,16 @@ def main(argv: list[str] | None = None) -> int:
 
     t_enc = trace_t_enc(encoder_wrapper)
     print(f"Encoder output time length T_enc = {t_enc} (from mel {N_MELS}x{MEL_FRAMES})")
+    # Fail-fast: the decoder's cross-attention is exported against a fixed encoder
+    # output length of 438 frames. If the traced length drifts (mel config / encoder
+    # swap), abort here rather than shipping a decoder whose cross-attention mask
+    # shape no longer matches the encoder output.
+    EXPECTED_T_ENC = 438
+    assert t_enc == EXPECTED_T_ENC, (
+        f"encoder T_enc mismatch: traced {t_enc}, expected {EXPECTED_T_ENC}. "
+        "The mel config or encoder changed — fix the architecture constants "
+        "before shipping this asset."
+    )
 
     if quantize_encoder is not None:
         encoder_wrapper = quantize_encoder(encoder_wrapper)
@@ -123,6 +133,15 @@ def main(argv: list[str] | None = None) -> int:
 
     tok = AutoTokenizer.from_pretrained(args.model_id, trust_remote_code=True)
     pieces = [tok.convert_ids_to_tokens(i) for i in range(16384)]
+    # Fail-fast: the Cohere transcribe vocab is 16384 tokens. If a model or tokenizer
+    # swap changes this, abort at convert time rather than shipping an asset the Swift
+    # runtime later rejects on a vocab-size mismatch.
+    EXPECTED_VOCAB = 16384
+    assert len(pieces) == EXPECTED_VOCAB, (
+        f"pieces.txt vocab mismatch: got {len(pieces)} pieces, expected "
+        f"{EXPECTED_VOCAB} for Cohere transcribe. A model or tokenizer swap changed "
+        "the vocab — fix the architecture constants before shipping this asset."
+    )
     (output_path / "pieces.txt").write_text("\n".join(pieces) + "\n", encoding="utf-8")
 
     print(f"Wrote {output_path} (quantize={args.quantize}, T_enc={t_enc}) + pieces.txt ({len(pieces)}).")
