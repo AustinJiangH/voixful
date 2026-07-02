@@ -6,24 +6,23 @@
 // window; smaller variants are named `encode_<frames>`. Engines pick the
 // smallest window that fits the clip. Single-window assets simply have no
 // `encode_<frames>` functions and keep their old behavior.
+//
+// IMPORTANT: these return NAMES, not loaded functions. `AIModel.loadFunction`
+// specializes the function's graph — for a multi-GB fp16 model, eagerly loading
+// every window materializes one specialized weight set PER WINDOW (measured
+// ~52 GB peak RSS for the 2B fp16 Cohere with 4 windows). Engines load lazily,
+// only the function a clip actually uses.
 
-import CoreAI
 import Foundation
 
-/// Load every `encode_<frames>` variant from `model`, ascending by window size.
-/// Returns `[]` for single-window assets.
-func loadEncodeWindowFunctions(
-    model: AIModel, modelURL: URL
-) throws -> [(frames: Int, fn: InferenceFunction)] {
-    let names = try ModelBackend.assetFunctions(modelURL: modelURL).names
-    var windows: [(frames: Int, fn: InferenceFunction)] = []
+/// Parse every `encode_<frames>` variant from an asset's function names,
+/// ascending by window size. Returns `[]` for single-window assets.
+func encodeWindowNames(_ names: Set<String>) -> [(frames: Int, name: String)] {
+    var windows: [(frames: Int, name: String)] = []
     for name in names {
         guard name.hasPrefix("encode_"),
               let frames = Int(name.dropFirst("encode_".count)) else { continue }
-        guard let fn = try model.loadFunction(named: name) else {
-            throw ASRError.missingFunction(name)
-        }
-        windows.append((frames, fn))
+        windows.append((frames, name))
     }
     return windows.sorted { $0.frames < $1.frames }
 }
@@ -31,7 +30,7 @@ func loadEncodeWindowFunctions(
 /// The smallest window that fits `realFrames`, else `nil` (use the canonical
 /// full-window `encode`).
 func pickEncodeWindow(
-    _ windows: [(frames: Int, fn: InferenceFunction)], realFrames: Int
-) -> (frames: Int, fn: InferenceFunction)? {
+    _ windows: [(frames: Int, name: String)], realFrames: Int
+) -> (frames: Int, name: String)? {
     windows.first { $0.frames >= realFrames }
 }

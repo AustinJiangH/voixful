@@ -19,12 +19,16 @@ import CoreAI
 import Foundation
 
 public actor ParakeetTDTEngine {
-    private let encodeFn: InferenceFunction
+    private let model: AIModel
     /// Smaller fixed-window encoder variants (`encode_<frames>`), ascending by
     /// window. The traced encoder always runs its full window, so short clips in
     /// the 1000-frame window burn compute on zero padding — `transcribe` picks
     /// the smallest window that fits the clip. Empty for single-window assets.
-    private let encodeWindows: [(frames: Int, fn: InferenceFunction)]
+    /// Functions load LAZILY — each load specializes its own weight set, so
+    /// eager loading of every window multiplies resident weight memory.
+    private let encodeWindows: [(frames: Int, name: String)]
+    /// Lazily loaded encode functions, keyed by name.
+    private var loaded: [String: InferenceFunction] = [:]
     private let prediction: PredictionSession
     private let joiner: JoinerSession
     private let tokenizer: SentencePieceTokenizer
@@ -55,11 +59,10 @@ public actor ParakeetTDTEngine {
         } catch {
             throw ASRError.modelLoadFailed("specialize(\(modelURL.path)): \(error)")
         }
-        guard let enc = try model.loadFunction(named: "encode") else {
-            throw ASRError.missingFunction("encode")
-        }
-        self.encodeFn = enc
-        self.encodeWindows = try loadEncodeWindowFunctions(model: model, modelURL: modelURL)
+        self.model = model
+        let names = try ModelBackend.assetFunctions(modelURL: modelURL).names
+        guard names.contains("encode") else { throw ASRError.missingFunction("encode") }
+        self.encodeWindows = encodeWindowNames(names)
         self.prediction = try await PredictionSession(model: model)
         self.joiner = try await JoinerSession(model: model)
         let tokenizer = try SentencePieceTokenizer(piecesURL: piecesURL)
@@ -73,6 +76,17 @@ public actor ParakeetTDTEngine {
         // Parakeet's preprocessor is `torch.stft(center=True)` with win<n_fft, so
         // center the 400-sample Hann in the 512 frame — offset (512-400)/2 = 56.
         self.melExtractor = MelExtractor(frameStartOffset: (512 - 400) / 2)
+    }
+
+    /// Load (and cache) an encode function by name — lazy so only the window a
+    /// clip actually uses gets specialized.
+    private func fn(_ name: String) throws -> InferenceFunction {
+        if let f = loaded[name] { return f }
+        guard let f = try model.loadFunction(named: name) else {
+            throw ASRError.missingFunction(name)
+        }
+        loaded[name] = f
+        return f
     }
 
     /// Transcribe a complete 16 kHz mono clip (full-context, one shot).
@@ -95,7 +109,7 @@ public actor ParakeetTDTEngine {
         let realT = melFlat.count / Self.nMels
         let picked = pickEncodeWindow(encodeWindows, realFrames: realT)
         let window = picked?.frames ?? Self.melFrames
-        let encode = picked?.fn ?? encodeFn
+        let encode = try fn(picked?.name ?? "encode")
         let useT = min(realT, window)
 
         // Parakeet's preprocessor uses `normalize: per_feature` (confirmed in the

@@ -18,29 +18,20 @@ import CoreAI
 import Foundation
 
 public actor CohereTranscribeEngine {
-    private let encodeFn: InferenceFunction
+    private let model: AIModel
+    /// Function names present in the asset. Functions are loaded LAZILY (see
+    /// `fn(_:)`) — `loadFunction` specializes the graph, and eagerly loading
+    /// every window/decoder variant materializes a specialized weight set per
+    /// function (measured ~52 GB peak RSS on the 2B fp16 with 4 windows).
+    private let available: Set<String>
     /// Smaller fixed-window encoder variants (`encode_<frames>`), ascending.
     /// Short clips pick the smallest window that fits instead of paying the
     /// full 35 s / 48-layer encode on zero padding; their output is zero-padded
     /// back up to the decoder's fixed 438 cross-attention frames (the
     /// cross-attention mask hides the padding). Empty for single-window assets.
-    private let encodeWindows: [(frames: Int, fn: InferenceFunction)]
-    private let decodeFn: InferenceFunction
-    /// Cached-decode pair (newer assets): `project_cross_kv` writes every
-    /// layer's cross-attention K/V into state buffers once per utterance, and
-    /// `decode_step_cached` reads them + mutates the self-attention cache in
-    /// place — ~2 KB of masks per step instead of ~14 MB of threaded tensors,
-    /// and no per-step re-projection of the encoder output. `nil` on older
-    /// assets (falls back to the stateless `decode_step`).
-    private let projectFn: InferenceFunction?
-    private let decodeCachedFn: InferenceFunction?
-    /// Newest assets: masks built in-graph from position/enc_len, output is the
-    /// argmax token [1,1] int32 — per-step host I/O is three scalars in, one out.
-    private let decodeFusedFn: InferenceFunction?
-    /// Four decode steps statically unrolled in one graph (argmax feeds the next
-    /// sub-step's embedding in-graph). Cuts the per-call dispatch floor 4x; the
-    /// host truncates the [1,4] token block at EOS.
-    private let decodeX4Fn: InferenceFunction?
+    private let encodeWindows: [(frames: Int, name: String)]
+    /// Lazily loaded functions, keyed by name.
+    private var loaded: [String: InferenceFunction] = [:]
     private let tokenizer: SentencePieceTokenizer
     private let melExtractor: MelExtractor
 
@@ -73,19 +64,12 @@ public actor CohereTranscribeEngine {
         } catch {
             throw ASRError.modelLoadFailed("specialize(\(modelURL.path)): \(error)")
         }
-        guard let enc = try model.loadFunction(named: "encode") else {
-            throw ASRError.missingFunction("encode")
-        }
-        guard let dec = try model.loadFunction(named: "decode_step") else {
-            throw ASRError.missingFunction("decode_step")
-        }
-        self.encodeFn = enc
-        self.encodeWindows = try loadEncodeWindowFunctions(model: model, modelURL: modelURL)
-        self.decodeFn = dec
-        self.projectFn = (try? model.loadFunction(named: "project_cross_kv")) ?? nil
-        self.decodeCachedFn = (try? model.loadFunction(named: "decode_step_cached")) ?? nil
-        self.decodeFusedFn = (try? model.loadFunction(named: "decode_step_fused")) ?? nil
-        self.decodeX4Fn = (try? model.loadFunction(named: "decode_x4")) ?? nil
+        self.model = model
+        let names = try ModelBackend.assetFunctions(modelURL: modelURL).names
+        guard names.contains("encode") else { throw ASRError.missingFunction("encode") }
+        guard names.contains("decode_step") else { throw ASRError.missingFunction("decode_step") }
+        self.available = names
+        self.encodeWindows = encodeWindowNames(names)
         let tokenizer = try SentencePieceTokenizer(piecesURL: piecesURL)
         guard tokenizer.count == Self.vocab else {
             throw ASRError.modelLoadFailed(
@@ -96,6 +80,17 @@ public actor CohereTranscribeEngine {
         // Cohere's preprocessor is the same NeMo per-feature / STFT-center mel as
         // Parakeet, so center the 400-sample Hann in the 512 FFT (offset 56).
         self.melExtractor = MelExtractor(frameStartOffset: (512 - 400) / 2)
+    }
+
+    /// Load (and cache) a function by name — lazy so only the window/decoder
+    /// variant a clip actually uses gets specialized.
+    private func fn(_ name: String) throws -> InferenceFunction {
+        if let f = loaded[name] { return f }
+        guard let f = try model.loadFunction(named: name) else {
+            throw ASRError.missingFunction(name)
+        }
+        loaded[name] = f
+        return f
     }
 
     /// Encoder valid output length for `realFrames` mel frames — three stride-2
@@ -118,7 +113,7 @@ public actor CohereTranscribeEngine {
         let realT = melFlat.count / Self.nMels
         let picked = pickEncodeWindow(encodeWindows, realFrames: realT)
         let window = picked?.frames ?? Self.melFrames
-        let encode = picked?.fn ?? encodeFn
+        let encode = try fn(picked?.name ?? "encode")
         let useT = min(realT, window)
         let normFlat = perFeatureNormalize(melFlat, nMels: Self.nMels, frames: realT)
 
@@ -161,20 +156,21 @@ public actor CohereTranscribeEngine {
         let tEnc = CFAbsoluteTimeGetCurrent()
 
         let emitted: [Int32]
-        if let projectFn, let decodeX4Fn {
+        let hasProject = available.contains("project_cross_kv")
+        if hasProject, available.contains("decode_x4") {
             emitted = try await decodeX4(
-                project: projectFn, step: decodeX4Fn,
+                project: try fn("project_cross_kv"), step: try fn("decode_x4"),
                 enc: enc, encLen: Self.encLen(useT))
-        } else if let projectFn, let decodeFusedFn {
+        } else if hasProject, available.contains("decode_step_fused") {
             emitted = try await decodeFused(
-                project: projectFn, step: decodeFusedFn,
+                project: try fn("project_cross_kv"), step: try fn("decode_step_fused"),
                 enc: enc, encLen: Self.encLen(useT))
-        } else if let projectFn, let decodeCachedFn {
+        } else if hasProject, available.contains("decode_step_cached") {
             emitted = try await decodeCached(
-                project: projectFn, step: decodeCachedFn,
+                project: try fn("project_cross_kv"), step: try fn("decode_step_cached"),
                 enc: enc, encLen: Self.encLen(useT))
         } else {
-            emitted = try await decode(enc: enc, encLen: Self.encLen(useT))
+            emitted = try await decode(step: try fn("decode_step"), enc: enc, encLen: Self.encLen(useT))
         }
         if Self.traceDecode {
             let tDec = CFAbsoluteTimeGetCurrent()
@@ -409,7 +405,7 @@ public actor CohereTranscribeEngine {
     }
 
     /// Greedy autoregressive decode with an external self-attention KV cache.
-    private func decode(enc: NDArray, encLen: Int) async throws -> [Int32] {
+    private func decode(step decodeFn: InferenceFunction, enc: NDArray, encLen: Int) async throws -> [Int32] {
         // Caches: [L,1,H,M,D], zero-initialized.
         let cacheShape = [Self.nLayers, 1, Self.nHeads, Self.maxCacheLen, Self.headDim]
         var kCache = NDArray(shape: cacheShape, scalarType: .float32)
