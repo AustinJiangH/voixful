@@ -277,3 +277,131 @@ class CohereDecoderStepCachedForCoreAI(nn.Module):
         h = self.final_layer_norm(h)
         logits = self.head.mlp.layer0(h)  # [1,1,16384]
         return logits
+
+
+class CohereDecoderX4ForCoreAI(CohereDecoderStepCachedForCoreAI):
+    """FOUR decode steps statically unrolled in one graph. Per-step host
+    dispatch (~4.5 ms/call, the measured floor) dominates the decoder, so the
+    argmax of each sub-step feeds the next sub-step's embedding IN-GRAPH and
+    the self-attention cache state is read/written once per block of four.
+    The host consumes the [1,4] token block and truncates at EOS (sub-steps
+    after EOS compute garbage that is never used). 108 cache slots = exactly
+    27 blocks.
+    """
+
+    UNROLL = 4
+
+    def __init__(self, model: nn.Module, t_enc: int, max_cache_len: int = 108):
+        super().__init__(model, max_cache_len=max_cache_len)
+        self.t_enc = t_enc
+
+    def _one_step(self, cur_id, pos, cross_k, cross_v, cross_mask, k_all, v_all):
+        """One decoder layer-stack pass against local cache tensors; returns
+        (logits, new_k_all, new_v_all). Mirrors CohereDecoderStepCachedForCoreAI
+        but with the cache as SSA locals so sub-steps chain inside the graph."""
+        sidx = torch.arange(self.max_cache_len).view(1, -1)
+        neg = torch.tensor(-1e9, dtype=torch.float32)
+        zero = torch.tensor(0.0, dtype=torch.float32)
+        self_mask = torch.where(sidx <= pos, zero, neg).view(1, 1, 1, self.max_cache_len)
+
+        h = self.embedding(cur_id, pos.view(1, 1))
+        sel = (sidx == pos).to(h.dtype)
+        oh = sel.view(1, 1, self.max_cache_len, 1).repeat(1, self.num_heads, 1, self.head_dim)
+
+        new_k, new_v = [], []
+        for i, layer in enumerate(self.layers):
+            residual = h
+            hn = layer.layer_norm_1(h)
+            a = layer.first_sub_layer
+            q = self._heads(a, a.query_net(hn))
+            nk = self._heads(a, a.key_net(hn))
+            nv = self._heads(a, a.value_net(hn))
+            nk_full = nk.repeat(1, 1, self.max_cache_len, 1)
+            nv_full = nv.repeat(1, 1, self.max_cache_len, 1)
+            kc = k_all[i] * (1.0 - oh) + nk_full * oh
+            vc = v_all[i] * (1.0 - oh) + nv_full * oh
+            new_k.append(kc)
+            new_v.append(vc)
+            attn = self._attention(q, kc, vc, self_mask, a.scale)
+            h = residual + a.out_projection(self._merge(attn))
+
+            residual = h
+            hn = layer.layer_norm_2(h)
+            c = layer.second_sub_layer
+            qx = self._heads(c, c.query_net(hn))
+            cross = self._attention(qx, cross_k[i], cross_v[i], cross_mask, c.scale)
+            h = residual + c.out_projection(self._merge(cross))
+
+            residual = h
+            h = residual + layer.third_sub_layer(layer.layer_norm_3(h))
+
+        h = self.final_layer_norm(h)
+        logits = self.head.mlp.layer0(h)
+        return logits, torch.stack(new_k, dim=0), torch.stack(new_v, dim=0)
+
+    def forward(  # type: ignore[override]
+        self,
+        input_id: torch.Tensor,   # [1,1] int — first sub-step's input token
+        position_id: torch.Tensor,  # [1,1] int — first sub-step's position
+        enc_len: torch.Tensor,    # [1] int
+        cross_k: torch.Tensor,    # [L,1,H,T_enc,D]
+        cross_v: torch.Tensor,    # [L,1,H,T_enc,D]
+    ):
+        neg = torch.tensor(-1e9, dtype=torch.float32)
+        zero = torch.tensor(0.0, dtype=torch.float32)
+        cidx = torch.arange(self.t_enc).view(1, -1)
+        cross_mask = torch.where(cidx < enc_len.long().view(-1, 1), zero, neg).view(
+            1, 1, 1, self.t_enc
+        )
+
+        cur = input_id.long()
+        base = position_id.long().view(-1, 1)
+        k_all = self.k_cache
+        v_all = self.v_cache
+        toks = []
+        for s in range(self.UNROLL):
+            pos = base + s  # [1,1]
+            logits, k_all, v_all = self._one_step(
+                cur, pos, cross_k, cross_v, cross_mask, k_all, v_all
+            )
+            cur = torch.argmax(logits, dim=-1)  # [1,1] int64, feeds next embedding
+            toks.append(cur.to(torch.int32))
+
+        self.k_cache.copy_(k_all)
+        self.v_cache.copy_(v_all)
+        return torch.cat(toks, dim=1)  # [1,4] int32
+
+
+class CohereDecoderStepFusedForCoreAI(CohereDecoderStepCachedForCoreAI):
+    """`decode_step_cached` with the last host round-trip costs folded in-graph:
+    both attention masks are built from `position_id` / `enc_len` (the same
+    arange-compare pattern as the one-hot cache write), and the output is the
+    argmax TOKEN [1,1] int32 instead of 16384 logits. Per-step host I/O shrinks
+    to three scalars in, one scalar out.
+    """
+
+    def __init__(self, model: nn.Module, t_enc: int, max_cache_len: int = 108):
+        super().__init__(model, max_cache_len=max_cache_len)
+        self.t_enc = t_enc
+
+    def forward(  # type: ignore[override]
+        self,
+        input_id: torch.Tensor,   # [1,1] int
+        position_id: torch.Tensor,  # [1,1] int
+        enc_len: torch.Tensor,    # [1] int (valid encoder frames)
+        cross_k: torch.Tensor,    # [L,1,H,T_enc,D]
+        cross_v: torch.Tensor,    # [L,1,H,T_enc,D]
+    ):
+        neg = torch.tensor(-1e9, dtype=torch.float32)
+        zero = torch.tensor(0.0, dtype=torch.float32)
+        pos = position_id.long().view(-1, 1)
+        sidx = torch.arange(self.max_cache_len).view(1, -1)
+        self_mask = torch.where(sidx <= pos, zero, neg).view(1, 1, 1, self.max_cache_len)
+        cidx = torch.arange(self.t_enc).view(1, -1)
+        cross_mask = torch.where(cidx < enc_len.long().view(-1, 1), zero, neg).view(
+            1, 1, 1, self.t_enc
+        )
+        logits = super().forward(
+            input_id, position_id, self_mask, cross_mask, cross_k, cross_v
+        )
+        return torch.argmax(logits, dim=-1).to(torch.int32)  # [1,1]

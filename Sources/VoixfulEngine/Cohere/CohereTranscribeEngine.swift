@@ -34,6 +34,13 @@ public actor CohereTranscribeEngine {
     /// assets (falls back to the stateless `decode_step`).
     private let projectFn: InferenceFunction?
     private let decodeCachedFn: InferenceFunction?
+    /// Newest assets: masks built in-graph from position/enc_len, output is the
+    /// argmax token [1,1] int32 — per-step host I/O is three scalars in, one out.
+    private let decodeFusedFn: InferenceFunction?
+    /// Four decode steps statically unrolled in one graph (argmax feeds the next
+    /// sub-step's embedding in-graph). Cuts the per-call dispatch floor 4x; the
+    /// host truncates the [1,4] token block at EOS.
+    private let decodeX4Fn: InferenceFunction?
     private let tokenizer: SentencePieceTokenizer
     private let melExtractor: MelExtractor
 
@@ -77,6 +84,8 @@ public actor CohereTranscribeEngine {
         self.decodeFn = dec
         self.projectFn = (try? model.loadFunction(named: "project_cross_kv")) ?? nil
         self.decodeCachedFn = (try? model.loadFunction(named: "decode_step_cached")) ?? nil
+        self.decodeFusedFn = (try? model.loadFunction(named: "decode_step_fused")) ?? nil
+        self.decodeX4Fn = (try? model.loadFunction(named: "decode_x4")) ?? nil
         let tokenizer = try SentencePieceTokenizer(piecesURL: piecesURL)
         guard tokenizer.count == Self.vocab else {
             throw ASRError.modelLoadFailed(
@@ -152,7 +161,15 @@ public actor CohereTranscribeEngine {
         let tEnc = CFAbsoluteTimeGetCurrent()
 
         let emitted: [Int32]
-        if let projectFn, let decodeCachedFn {
+        if let projectFn, let decodeX4Fn {
+            emitted = try await decodeX4(
+                project: projectFn, step: decodeX4Fn,
+                enc: enc, encLen: Self.encLen(useT))
+        } else if let projectFn, let decodeFusedFn {
+            emitted = try await decodeFused(
+                project: projectFn, step: decodeFusedFn,
+                enc: enc, encLen: Self.encLen(useT))
+        } else if let projectFn, let decodeCachedFn {
             emitted = try await decodeCached(
                 project: projectFn, step: decodeCachedFn,
                 enc: enc, encLen: Self.encLen(useT))
@@ -176,6 +193,137 @@ public actor CohereTranscribeEngine {
         // Batch AED decode produces one final transcript; segments aren't surfaced
         // and the language is model-auto-detected.
         return Transcript(text: tokenizer.decode(emitted), segments: [], language: nil)
+    }
+
+    /// Greedy decode in blocks of four: each `decode_x4` call runs four unrolled
+    /// decoder steps in-graph (argmax feeding the next embedding), returning a
+    /// [1,4] int32 token block. The host truncates at EOS. One dispatch per
+    /// four tokens instead of per token.
+    private func decodeX4(
+        project: InferenceFunction, step: InferenceFunction,
+        enc: NDArray, encLen: Int
+    ) async throws -> [Int32] {
+        let kvShape = [Self.nLayers, 1, Self.nHeads, Self.maxCacheLen, Self.headDim]
+        var kCache = NDArray(shape: kvShape, scalarType: .float32)
+        var vCache = NDArray(shape: kvShape, scalarType: .float32)
+        kCache.zeroFloat32()
+        vCache.zeroFloat32()
+
+        var projOut = try await project.run(
+            inputs: ["encoder_hidden_states": enc],
+            states: InferenceFunction.MutableViews())
+        guard let crossK = projOut.remove("cross_k")?.ndArray,
+              let crossV = projOut.remove("cross_v")?.ndArray else {
+            throw ASRError.missingOutput("project_cross_kv outputs")
+        }
+
+        var encLenND = NDArray(shape: [1], scalarType: .int32)
+        encLenND.setInt32(at: 0, to: Int32(encLen))
+        var inputND = NDArray(shape: [1, 1], scalarType: .int32)
+        var posND = NDArray(shape: [1, 1], scalarType: .int32)
+
+        var emitted: [Int32] = []
+        var prev = Self.startToken
+        var hitEOS = false
+        var pos = 0
+        blocks: while pos < Self.maxCacheLen {
+            inputND.setInt32(at: 0, to: prev)
+            posND.setInt32(at: 0, to: Int32(pos))
+            var states = InferenceFunction.MutableViews()
+            states.insert(&kCache, for: "k_cache")
+            states.insert(&vCache, for: "v_cache")
+            var out = try await step.run(
+                inputs: [
+                    "input_id": inputND, "position_id": posND, "enc_len": encLenND,
+                    "cross_k": crossK, "cross_v": crossV,
+                ],
+                states: states
+            )
+            guard let block = out.remove("tokens")?.ndArray else {
+                throw ASRError.missingOutput("decode_x4 tokens")
+            }
+            let n = block.elementCount
+            var toks = [Int32](repeating: 0, count: n)
+            block.view(as: Int32.self).withUnsafePointer { ptr, _, _ in
+                for j in 0..<n { toks[j] = ptr[j] }
+            }
+            if Self.traceDecode {
+                FileHandle.standardError.write(Data("[cohere] pos=\(pos) block=\(toks)\n".utf8))
+            }
+            for tok in toks {
+                if tok == Self.eosToken { hitEOS = true; break blocks }
+                emitted.append(tok)
+            }
+            prev = toks[n - 1]
+            pos += n
+        }
+        if !hitEOS {
+            FileHandle.standardError.write(Data((
+                "[cohere] warning: hit the \(Self.maxCacheLen)-token decode limit without EOS — "
+                + "transcript is likely TRUNCATED (clip exceeds the model's per-window token budget).\n").utf8))
+        }
+        return emitted
+    }
+
+    /// Greedy decode via the fused decoder: masks built in-graph, argmax token
+    /// returned directly. Per-step host I/O = input_id + position_id + enc_len
+    /// (+ the reused cross K/V handles) in, one int32 token out.
+    private func decodeFused(
+        project: InferenceFunction, step: InferenceFunction,
+        enc: NDArray, encLen: Int
+    ) async throws -> [Int32] {
+        let kvShape = [Self.nLayers, 1, Self.nHeads, Self.maxCacheLen, Self.headDim]
+        var kCache = NDArray(shape: kvShape, scalarType: .float32)
+        var vCache = NDArray(shape: kvShape, scalarType: .float32)
+        kCache.zeroFloat32()
+        vCache.zeroFloat32()
+
+        var projOut = try await project.run(
+            inputs: ["encoder_hidden_states": enc],
+            states: InferenceFunction.MutableViews())
+        guard let crossK = projOut.remove("cross_k")?.ndArray,
+              let crossV = projOut.remove("cross_v")?.ndArray else {
+            throw ASRError.missingOutput("project_cross_kv outputs")
+        }
+
+        var encLenND = NDArray(shape: [1], scalarType: .int32)
+        encLenND.setInt32(at: 0, to: Int32(encLen))
+        var inputND = NDArray(shape: [1, 1], scalarType: .int32)
+        var posND = NDArray(shape: [1, 1], scalarType: .int32)
+
+        var emitted: [Int32] = []
+        var prev = Self.startToken
+        var hitEOS = false
+        for pos in 0..<Self.maxCacheLen {
+            inputND.setInt32(at: 0, to: prev)
+            posND.setInt32(at: 0, to: Int32(pos))
+            var states = InferenceFunction.MutableViews()
+            states.insert(&kCache, for: "k_cache")
+            states.insert(&vCache, for: "v_cache")
+            var out = try await step.run(
+                inputs: [
+                    "input_id": inputND, "position_id": posND, "enc_len": encLenND,
+                    "cross_k": crossK, "cross_v": crossV,
+                ],
+                states: states
+            )
+            guard let tokenND = out.remove("token")?.ndArray else {
+                throw ASRError.missingOutput("decode_step_fused token")
+            }
+            let next = tokenND.view(as: Int32.self).withUnsafePointer { ptr, _, _ in ptr[0] }
+            if Self.traceDecode {
+                FileHandle.standardError.write(Data("[cohere] pos=\(pos) tok=\(next)\n".utf8))
+            }
+            if next == Self.eosToken { hitEOS = true; break }
+            emitted.append(next)
+            prev = next
+        }
+        if !hitEOS {
+            FileHandle.standardError.write(Data((
+                "[cohere] warning: hit the \(Self.maxCacheLen)-token decode limit without EOS — "
+                + "transcript is likely TRUNCATED (clip exceeds the model's per-window token budget).\n").utf8))
+        }
+        return emitted
     }
 
     /// Greedy decode via the cached-decoder pair: cross-attention K/V projected

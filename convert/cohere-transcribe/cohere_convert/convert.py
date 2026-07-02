@@ -21,6 +21,8 @@ from .export import (
     export_cross_kv_projector,
     export_decoder,
     export_encoder,
+    export_fused_decoder,
+    export_x4_decoder,
     trace_t_enc,
 )
 from .extract import DEFAULT_MODEL_ID, load_cohere
@@ -28,6 +30,8 @@ from .models import (
     CohereCrossKVProjectorForCoreAI,
     CohereDecoderStepCachedForCoreAI,
     CohereDecoderStepForCoreAI,
+    CohereDecoderStepFusedForCoreAI,
+    CohereDecoderX4ForCoreAI,
     CohereEncoderForCoreAI,
 )
 
@@ -140,6 +144,16 @@ def main(argv: list[str] | None = None) -> int:
     exported_projector = export_cross_kv_projector(projector_wrapper, t_enc)
     print("Exporting decode_step_cached ...")
     exported_cached_decoder = export_cached_decoder(cached_decoder_wrapper, t_enc)
+    fused_decoder_wrapper = CohereDecoderStepFusedForCoreAI(
+        model, t_enc=t_enc, max_cache_len=CACHE_LEN
+    ).eval()
+    print("Exporting decode_step_fused ...")
+    exported_fused_decoder = export_fused_decoder(fused_decoder_wrapper, t_enc)
+    x4_decoder_wrapper = CohereDecoderX4ForCoreAI(
+        model, t_enc=t_enc, max_cache_len=CACHE_LEN
+    ).eval()
+    print("Exporting decode_x4 ...")
+    exported_x4_decoder = export_x4_decoder(x4_decoder_wrapper, t_enc)
 
     converter = coreai_torch.TorchConverter()
     # One encoder program per window; the largest (3500 — the decoder's traced
@@ -179,6 +193,20 @@ def main(argv: list[str] | None = None) -> int:
         ],
         state_names=["k_cache", "v_cache"],
         output_names=["logits"],
+    )
+    converter.add_exported_program(
+        exported_fused_decoder,
+        entrypoint_name="decode_step_fused",
+        input_names=["input_id", "position_id", "enc_len", "cross_k", "cross_v"],
+        state_names=["k_cache", "v_cache"],
+        output_names=["token"],
+    )
+    converter.add_exported_program(
+        exported_x4_decoder,
+        entrypoint_name="decode_x4",
+        input_names=["input_id", "position_id", "enc_len", "cross_k", "cross_v"],
+        state_names=["k_cache", "v_cache"],
+        output_names=["tokens"],
     )
 
     ai_program = converter.to_coreai()
