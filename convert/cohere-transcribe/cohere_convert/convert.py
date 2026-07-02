@@ -73,8 +73,26 @@ def main(argv: list[str] | None = None) -> int:
         default="none",
         help="Encoder compression (>90%% of params): palette4 = the RAM win.",
     )
+    parser.add_argument(
+        "--windows",
+        default="875,1750,3500",
+        help=(
+            "Comma-separated encoder mel-frame windows. The traced encoder always "
+            "runs its full window, so a short clip in the 35 s window burns 48-layer "
+            "compute on zero padding; exporting several windows lets the runtime pick "
+            "the smallest >= the clip's frames. The LARGEST must stay 3500 (the "
+            "decoder is traced against its T_enc=438) and keeps the name 'encode'; "
+            "smaller windows are 'encode_<frames>' and the runtime zero-pads their "
+            "output up to 438 (the cross-attention mask hides the padding)."
+        ),
+    )
     args = parser.parse_args(argv)
     output_path = Path(args.output)
+    windows = sorted({int(w) for w in args.windows.split(",")})
+    assert windows[-1] == MEL_FRAMES, (
+        f"largest --windows entry must be {MEL_FRAMES} (the decoder's cross-attention "
+        f"is traced against its T_enc); got {windows[-1]}"
+    )
 
     quantize_encoder = _build_quantizer(args.quantize)
 

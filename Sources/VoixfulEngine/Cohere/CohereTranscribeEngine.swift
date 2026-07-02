@@ -19,6 +19,12 @@ import Foundation
 
 public actor CohereTranscribeEngine {
     private let encodeFn: InferenceFunction
+    /// Smaller fixed-window encoder variants (`encode_<frames>`), ascending.
+    /// Short clips pick the smallest window that fits instead of paying the
+    /// full 35 s / 48-layer encode on zero padding; their output is zero-padded
+    /// back up to the decoder's fixed 438 cross-attention frames (the
+    /// cross-attention mask hides the padding). Empty for single-window assets.
+    private let encodeWindows: [(frames: Int, fn: InferenceFunction)]
     private let decodeFn: InferenceFunction
     private let tokenizer: SentencePieceTokenizer
     private let melExtractor: MelExtractor
@@ -59,6 +65,7 @@ public actor CohereTranscribeEngine {
             throw ASRError.missingFunction("decode_step")
         }
         self.encodeFn = enc
+        self.encodeWindows = try loadEncodeWindowFunctions(model: model, modelURL: modelURL)
         self.decodeFn = dec
         let tokenizer = try SentencePieceTokenizer(piecesURL: piecesURL)
         guard tokenizer.count == Self.vocab else {
@@ -85,18 +92,23 @@ public actor CohereTranscribeEngine {
         await melExtractor.reset()
         let t0 = CFAbsoluteTimeGetCurrent()
 
-        // Mel -> [1,128,3500], per-feature normalized over the real frames.
+        // Mel -> fixed-window [1,128,W], per-feature normalized over the real
+        // frames. Pick the smallest exported window that fits the clip so short
+        // clips don't pay the full 35 s / 48-layer encode on zero padding.
         let melFlat = await melExtractor.extract(samples: audio)  // [128 × T]
         let realT = melFlat.count / Self.nMels
-        let useT = min(realT, Self.melFrames)
+        let picked = pickEncodeWindow(encodeWindows, realFrames: realT)
+        let window = picked?.frames ?? Self.melFrames
+        let encode = picked?.fn ?? encodeFn
+        let useT = min(realT, window)
         let normFlat = perFeatureNormalize(melFlat, nMels: Self.nMels, frames: realT)
 
-        var melND = NDArray(shape: [1, Self.nMels, Self.melFrames], scalarType: .float32)
+        var melND = NDArray(shape: [1, Self.nMels, window], scalarType: .float32)
         var melMV = melND.mutableView(as: Float.self)
         melMV.withUnsafeMutablePointer { ptr, _, _ in
-            ptr.update(repeating: 0, count: Self.nMels * Self.melFrames)
+            ptr.update(repeating: 0, count: Self.nMels * window)
             for m in 0..<Self.nMels {
-                let src = m * realT, dst = m * Self.melFrames
+                let src = m * realT, dst = m * window
                 for t in 0..<useT { ptr[dst + t] = normFlat[src + t] }
             }
         }
@@ -105,12 +117,27 @@ public actor CohereTranscribeEngine {
         let tMel = CFAbsoluteTimeGetCurrent()
 
         // Encode once.
-        var encOut = try await encodeFn.run(
+        var encOut = try await encode.run(
             inputs: ["input_features": melND, "length": lenND],
             states: InferenceFunction.MutableViews()
         )
-        guard let enc = encOut.remove("encoder_hidden_states")?.ndArray else {
+        guard var enc = encOut.remove("encoder_hidden_states")?.ndArray else {
             throw ASRError.missingOutput("encoder_hidden_states")
+        }
+        // A smaller window emits [1, encLen(window), 1024]; the decoder is traced
+        // against [1, 438, 1024]. Zero-pad the tail — the cross-attention mask
+        // (valid only below encLen(useT)) hides it from the decoder.
+        if enc.shape[1] < Self.tEnc {
+            let validFrames = enc.shape[1]
+            var padded = NDArray(shape: [1, Self.tEnc, Self.encDim], scalarType: .float32)
+            padded.zeroFloat32()
+            enc.view(as: Float.self).withUnsafePointer { src, _, _ in
+                var dv = padded.mutableView(as: Float.self)
+                dv.withUnsafeMutablePointer { dst, _, _ in
+                    dst.update(from: src, count: validFrames * Self.encDim)
+                }
+            }
+            enc = padded
         }
         let tEnc = CFAbsoluteTimeGetCurrent()
 
@@ -125,7 +152,7 @@ public actor CohereTranscribeEngine {
             let line = String(
                 format: "[cohere/timing] audio=%.1fs realT=%d useT=%d (window=%d) | "
                     + "mel=%.0fms encode=%.0fms decode=%.0fms (%d steps, %.1fms/step)\n",
-                audioS, realT, useT, Self.melFrames, melMS, encMS, decMS, steps,
+                audioS, realT, useT, window, melMS, encMS, decMS, steps,
                 decMS / Double(steps))
             FileHandle.standardError.write(Data(line.utf8))
         }

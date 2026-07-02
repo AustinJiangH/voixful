@@ -21,22 +21,22 @@ DEC_HIDDEN = 1024
 VOCAB = 16384
 
 
-def encoder_example():
-    mel = torch.zeros(1, N_MELS, MEL_FRAMES, dtype=torch.float32)
-    length = torch.tensor([MEL_FRAMES], dtype=torch.int32)
+def encoder_example(mel_frames: int = MEL_FRAMES):
+    mel = torch.zeros(1, N_MELS, mel_frames, dtype=torch.float32)
+    length = torch.tensor([mel_frames], dtype=torch.int32)
     return mel, length
 
 
-def trace_t_enc(encoder_wrapper) -> int:
+def trace_t_enc(encoder_wrapper, mel_frames: int = MEL_FRAMES) -> int:
     """Run the encoder once to learn its fixed output time length (T_enc)."""
-    mel, length = encoder_example()
+    mel, length = encoder_example(mel_frames)
     with torch.no_grad():
         out = encoder_wrapper(mel, length)
     return out.shape[1]
 
 
-def export_encoder(encoder_wrapper):
-    ep = torch.export.export(encoder_wrapper, encoder_example())
+def export_encoder(encoder_wrapper, mel_frames: int = MEL_FRAMES):
+    ep = torch.export.export(encoder_wrapper, encoder_example(mel_frames))
     return ep.run_decompositions(coreai_torch.get_decomp_table())
 
 

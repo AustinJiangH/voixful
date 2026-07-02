@@ -20,6 +20,11 @@ import Foundation
 
 public actor ParakeetTDTEngine {
     private let encodeFn: InferenceFunction
+    /// Smaller fixed-window encoder variants (`encode_<frames>`), ascending by
+    /// window. The traced encoder always runs its full window, so short clips in
+    /// the 1000-frame window burn compute on zero padding — `transcribe` picks
+    /// the smallest window that fits the clip. Empty for single-window assets.
+    private let encodeWindows: [(frames: Int, fn: InferenceFunction)]
     private let prediction: PredictionSession
     private let joiner: JoinerSession
     private let tokenizer: SentencePieceTokenizer
@@ -54,6 +59,7 @@ public actor ParakeetTDTEngine {
             throw ASRError.missingFunction("encode")
         }
         self.encodeFn = enc
+        self.encodeWindows = try loadEncodeWindowFunctions(model: model, modelURL: modelURL)
         self.prediction = try await PredictionSession(model: model)
         self.joiner = try await JoinerSession(model: model)
         let tokenizer = try SentencePieceTokenizer(piecesURL: piecesURL)
@@ -82,10 +88,15 @@ public actor ParakeetTDTEngine {
         try await prediction.step(token: Self.blankId)
         let t0 = CFAbsoluteTimeGetCurrent()
 
-        // Mel → fixed [1, 128, 1000] NDArray (pad/truncate the time axis).
+        // Mel → fixed-window NDArray (pad/truncate the time axis). Pick the
+        // smallest exported encoder window that fits the clip so short clips
+        // don't pay the full 1000-frame encode on zero padding.
         let melFlat = await melExtractor.extract(samples: audio)  // row-major [128 × T]
         let realT = melFlat.count / Self.nMels
-        let useT = min(realT, Self.melFrames)
+        let picked = pickEncodeWindow(encodeWindows, realFrames: realT)
+        let window = picked?.frames ?? Self.melFrames
+        let encode = picked?.fn ?? encodeFn
+        let useT = min(realT, window)
 
         // Parakeet's preprocessor uses `normalize: per_feature` (confirmed in the
         // checkpoint config) — each mel bin is standardized to zero mean / unit std
@@ -95,13 +106,13 @@ public actor ParakeetTDTEngine {
         // and the TDT decoder collapses to the prediction network's LM prior.
         let normFlat = perFeatureNormalize(melFlat, nMels: Self.nMels, frames: realT)
 
-        var melND = NDArray(shape: [1, Self.nMels, Self.melFrames], scalarType: .float32)
+        var melND = NDArray(shape: [1, Self.nMels, window], scalarType: .float32)
         var mv = melND.mutableView(as: Float.self)
         mv.withUnsafeMutablePointer { ptr, _, _ in
-            ptr.update(repeating: 0, count: Self.nMels * Self.melFrames)
+            ptr.update(repeating: 0, count: Self.nMels * window)
             for m in 0..<Self.nMels {
                 let srcRow = m * realT
-                let dstRow = m * Self.melFrames
+                let dstRow = m * window
                 for t in 0..<useT { ptr[dstRow + t] = normFlat[srcRow + t] }
             }
         }
@@ -110,7 +121,7 @@ public actor ParakeetTDTEngine {
 
         // Full-context encode (no states).
         let tMel = CFAbsoluteTimeGetCurrent()
-        var outputs = try await encodeFn.run(
+        var outputs = try await encode.run(
             inputs: ["mel": melND, "mel_length": lenND],
             states: InferenceFunction.MutableViews()
         )
@@ -125,7 +136,7 @@ public actor ParakeetTDTEngine {
             let line = String(
                 format: "[parakeet/timing] audio=%.1fs realT=%d useT=%d (window=%d) | "
                     + "mel=%.0fms encode=%.0fms decode=%.0fms emitted=%d\n",
-                Double(audio.count) / 16_000, realT, useT, Self.melFrames,
+                Double(audio.count) / 16_000, realT, useT, window,
                 (tMel - t0) * 1000, (tEnc - tMel) * 1000, (tDec - tEnc) * 1000, emitted.count)
             FileHandle.standardError.write(Data(line.utf8))
         }
