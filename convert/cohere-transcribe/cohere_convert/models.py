@@ -136,3 +136,144 @@ class CohereDecoderStepForCoreAI(nn.Module):
         # greedy decision under Core AI's fp kernels.
         logits = self.head.mlp.layer0(h)  # [1,1,16384]
         return logits, torch.stack(new_k, dim=0), torch.stack(new_v, dim=0)
+
+
+class CohereCrossKVProjectorForCoreAI(nn.Module):
+    """Project encoder output to every layer's cross-attention K/V ONCE per
+    utterance.
+
+    The stateless `decode_step` recomputes these projections every token —
+    8 layers x 2 x matmul([T_enc,1024]x[1024,1024]) per step, roughly half the
+    per-step FLOPs. Running them once and feeding the result to
+    `decode_step_cached` removes the recompute. Plain outputs (not states):
+    torch.export bakes READ-ONLY buffers as constants, so the cached decoder
+    takes these as regular inputs instead.
+    """
+
+    def __init__(self, model: nn.Module):
+        super().__init__()
+        dec = model.transf_decoder
+        self.layers = dec._decoder.layers
+
+    def _heads(self, attn, x):
+        b, t, _ = x.shape
+        return x.view(b, t, attn.num_heads, attn.head_dim).transpose(1, 2)
+
+    def forward(self, encoder_hidden_states: torch.Tensor):  # [1, T_enc, 1024]
+        ks, vs = [], []
+        for layer in self.layers:
+            c = layer.second_sub_layer
+            ks.append(self._heads(c, c.key_net(encoder_hidden_states)))
+            vs.append(self._heads(c, c.value_net(encoder_hidden_states)))
+        return torch.stack(ks, dim=0), torch.stack(vs, dim=0)  # [L,1,H,T_enc,D] x2
+
+
+class CohereDecoderStepCachedForCoreAI(nn.Module):
+    """One decoder step with a STATEFUL self-attention cache and precomputed
+    cross-attention K/V.
+
+    vs the stateless `decode_step`: cross-attention K/V come precomputed from
+    `project_cross_kv` (not re-projected from the 1.8 MB encoder output every
+    step), and the self-attention cache is a mutated Core AI state (in-place
+    MutableViews) instead of being threaded in/out (~14 MB/token). cross_k/v
+    are regular INPUTS — torch.export bakes read-only buffers as constants, so
+    they cannot be states here.
+
+    Same one-hot cache-write and `.repeat()` materialization as `decode_step` —
+    coreai_torch mis-converts stride-0 broadcast multiplies (see that class).
+    """
+
+    def __init__(self, model: nn.Module, max_cache_len: int = 108):
+        super().__init__()
+        dec = model.transf_decoder
+        self.embedding = dec._embedding
+        self.layers = dec._decoder.layers
+        self.final_layer_norm = dec._decoder.final_layer_norm
+        self.head = model.log_softmax
+        first_attn = self.layers[0].first_sub_layer
+        self.num_heads = first_attn.num_heads
+        self.head_dim = first_attn.head_dim
+        self.hidden_size = first_attn.hidden_size
+        self.n_layers = len(self.layers)
+        self.max_cache_len = max_cache_len
+        self.register_buffer(
+            "k_cache",
+            torch.zeros(self.n_layers, 1, self.num_heads, max_cache_len, self.head_dim),
+        )
+        self.register_buffer(
+            "v_cache",
+            torch.zeros(self.n_layers, 1, self.num_heads, max_cache_len, self.head_dim),
+        )
+
+    def _heads(self, attn, x):
+        b, t, _ = x.shape
+        return x.view(b, t, attn.num_heads, attn.head_dim).transpose(1, 2)
+
+    def _merge(self, x):
+        b, _, t, _ = x.shape
+        return x.transpose(1, 2).contiguous().view(b, t, self.hidden_size)
+
+    @staticmethod
+    def _attention(q, k, v, attn_mask, scale):
+        # Manual SDPA — F.scaled_dot_product_attention mis-converts (see
+        # CohereDecoderStepForCoreAI._attention).
+        scores = torch.matmul(q, k.transpose(-2, -1)) * scale + attn_mask
+        weights = torch.softmax(scores, dim=-1)
+        return torch.matmul(weights, v)
+
+    def forward(
+        self,
+        input_id: torch.Tensor,             # [1,1] int
+        position_id: torch.Tensor,          # [1,1] int
+        self_attention_mask: torch.Tensor,  # [1,1,1,M] additive
+        cross_attention_mask: torch.Tensor, # [1,1,1,T_enc] additive
+        cross_k: torch.Tensor,              # [L,1,H,T_enc,D] from project_cross_kv
+        cross_v: torch.Tensor,              # [L,1,H,T_enc,D]
+    ):
+        input_id = input_id.long()
+        position_id = position_id.long()
+        h = self.embedding(input_id, position_id)  # [1,1,1024]
+
+        idx = torch.arange(self.max_cache_len, device=h.device).view(1, -1)
+        sel = (idx == position_id.view(-1, 1)).to(h.dtype)
+        oh = sel.view(1, 1, self.max_cache_len, 1).repeat(1, self.num_heads, 1, self.head_dim)
+
+        new_k, new_v = [], []
+        for i, layer in enumerate(self.layers):
+            # --- self-attention (state cache) ---
+            residual = h
+            hn = layer.layer_norm_1(h)
+            a = layer.first_sub_layer
+            q = self._heads(a, a.query_net(hn))
+            nk = self._heads(a, a.key_net(hn))
+            nv = self._heads(a, a.value_net(hn))
+            nk_full = nk.repeat(1, 1, self.max_cache_len, 1)
+            nv_full = nv.repeat(1, 1, self.max_cache_len, 1)
+            kc = self.k_cache[i] * (1.0 - oh) + nk_full * oh
+            vc = self.v_cache[i] * (1.0 - oh) + nv_full * oh
+            new_k.append(kc)
+            new_v.append(vc)
+            attn = self._attention(q, kc, vc, self_attention_mask, a.scale)
+            h = residual + a.out_projection(self._merge(attn))
+
+            # --- cross-attention (precomputed K/V) ---
+            residual = h
+            hn = layer.layer_norm_2(h)
+            c = layer.second_sub_layer
+            qx = self._heads(c, c.query_net(hn))
+            cross = self._attention(
+                qx, cross_k[i], cross_v[i], cross_attention_mask, c.scale
+            )
+            h = residual + c.out_projection(self._merge(cross))
+
+            # --- feed-forward ---
+            residual = h
+            h = residual + layer.third_sub_layer(layer.layer_norm_3(h))
+
+        # Write the updated self-attention cache back into state, in place.
+        self.k_cache.copy_(torch.stack(new_k, dim=0))
+        self.v_cache.copy_(torch.stack(new_v, dim=0))
+
+        h = self.final_layer_norm(h)
+        logits = self.head.mlp.layer0(h)  # [1,1,16384]
+        return logits

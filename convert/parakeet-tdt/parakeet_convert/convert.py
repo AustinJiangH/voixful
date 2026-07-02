@@ -136,6 +136,12 @@ def main(argv: list[str] | None = None) -> int:
 
     ai_program = converter.to_coreai()
     ai_program.optimize()
+    if output_path.exists():
+        # save_asset refuses to overwrite (FileExistsError on main.mlirb);
+        # treat the output like any build artifact and replace it.
+        import shutil
+        shutil.rmtree(output_path)
+        print(f"Replaced existing {output_path}")
     ai_program.save_asset(output_path)
 
     # Bundle the SentencePiece vocab inside the .aimodel so the runtime is

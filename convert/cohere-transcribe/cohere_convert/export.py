@@ -55,3 +55,25 @@ def decoder_example(t_enc: int):
 def export_decoder(decoder_wrapper, t_enc: int):
     ep = torch.export.export(decoder_wrapper, decoder_example(t_enc))
     return ep.run_decompositions(coreai_torch.get_decomp_table())
+
+
+def export_cross_kv_projector(projector_wrapper, t_enc: int):
+    example = (torch.zeros(1, t_enc, DEC_HIDDEN, dtype=torch.float32),)
+    ep = torch.export.export(projector_wrapper, example)
+    return ep.run_decompositions(coreai_torch.get_decomp_table())
+
+
+def cached_decoder_example(t_enc: int):
+    return (
+        torch.zeros(1, 1, dtype=torch.int32),                  # input_id
+        torch.zeros(1, 1, dtype=torch.int32),                  # position_id
+        torch.zeros(1, 1, 1, CACHE_LEN, dtype=torch.float32),  # self_attention_mask
+        torch.zeros(1, 1, 1, t_enc, dtype=torch.float32),      # cross_attention_mask
+        torch.zeros(N_LAYERS, 1, N_HEADS, t_enc, HEAD_DIM, dtype=torch.float32),  # cross_k
+        torch.zeros(N_LAYERS, 1, N_HEADS, t_enc, HEAD_DIM, dtype=torch.float32),  # cross_v
+    )
+
+
+def export_cached_decoder(decoder_wrapper, t_enc: int):
+    ep = torch.export.export(decoder_wrapper, cached_decoder_example(t_enc))
+    return ep.run_decompositions(coreai_torch.get_decomp_table())

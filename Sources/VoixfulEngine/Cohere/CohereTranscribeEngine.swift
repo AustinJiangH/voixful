@@ -26,6 +26,14 @@ public actor CohereTranscribeEngine {
     /// cross-attention mask hides the padding). Empty for single-window assets.
     private let encodeWindows: [(frames: Int, fn: InferenceFunction)]
     private let decodeFn: InferenceFunction
+    /// Cached-decode pair (newer assets): `project_cross_kv` writes every
+    /// layer's cross-attention K/V into state buffers once per utterance, and
+    /// `decode_step_cached` reads them + mutates the self-attention cache in
+    /// place — ~2 KB of masks per step instead of ~14 MB of threaded tensors,
+    /// and no per-step re-projection of the encoder output. `nil` on older
+    /// assets (falls back to the stateless `decode_step`).
+    private let projectFn: InferenceFunction?
+    private let decodeCachedFn: InferenceFunction?
     private let tokenizer: SentencePieceTokenizer
     private let melExtractor: MelExtractor
 
@@ -47,11 +55,11 @@ public actor CohereTranscribeEngine {
     public init(modelURL: URL, piecesURL: URL) async throws {
         let model: AIModel
         do {
-            if let cached = try AIModelCache.default.model(for: modelURL, options: .default) {
+            if let cached = try AIModelCache.default.model(for: modelURL, options: specializationOptions()) {
                 model = cached
             } else {
                 model = try await AIModel.specialize(
-                    contentsOf: modelURL, options: .default,
+                    contentsOf: modelURL, options: specializationOptions(),
                     cache: AIModelCache.default, cachePolicy: .persistent
                 )
             }
@@ -67,6 +75,8 @@ public actor CohereTranscribeEngine {
         self.encodeFn = enc
         self.encodeWindows = try loadEncodeWindowFunctions(model: model, modelURL: modelURL)
         self.decodeFn = dec
+        self.projectFn = (try? model.loadFunction(named: "project_cross_kv")) ?? nil
+        self.decodeCachedFn = (try? model.loadFunction(named: "decode_step_cached")) ?? nil
         let tokenizer = try SentencePieceTokenizer(piecesURL: piecesURL)
         guard tokenizer.count == Self.vocab else {
             throw ASRError.modelLoadFailed(
@@ -141,7 +151,14 @@ public actor CohereTranscribeEngine {
         }
         let tEnc = CFAbsoluteTimeGetCurrent()
 
-        let emitted = try await decode(enc: enc, encLen: Self.encLen(useT))
+        let emitted: [Int32]
+        if let projectFn, let decodeCachedFn {
+            emitted = try await decodeCached(
+                project: projectFn, step: decodeCachedFn,
+                enc: enc, encLen: Self.encLen(useT))
+        } else {
+            emitted = try await decode(enc: enc, encLen: Self.encLen(useT))
+        }
         if Self.traceDecode {
             let tDec = CFAbsoluteTimeGetCurrent()
             let steps = emitted.count + 1
@@ -159,6 +176,88 @@ public actor CohereTranscribeEngine {
         // Batch AED decode produces one final transcript; segments aren't surfaced
         // and the language is model-auto-detected.
         return Transcript(text: tokenizer.decode(emitted), segments: [], language: nil)
+    }
+
+    /// Greedy decode via the cached-decoder pair: cross-attention K/V projected
+    /// once into host-owned state buffers, self-attention cache mutated in place.
+    /// Per-step traffic is just the two ids + two masks (vs ~14 MB threaded
+    /// tensors in the stateless `decode`).
+    private func decodeCached(
+        project: InferenceFunction, step: InferenceFunction,
+        enc: NDArray, encLen: Int
+    ) async throws -> [Int32] {
+        // Self-attention cache: host-owned state buffers mutated in place.
+        let kvShape = [Self.nLayers, 1, Self.nHeads, Self.maxCacheLen, Self.headDim]
+        var kCache = NDArray(shape: kvShape, scalarType: .float32)
+        var vCache = NDArray(shape: kvShape, scalarType: .float32)
+        kCache.zeroFloat32()
+        vCache.zeroFloat32()
+
+        // Project every layer's cross-attention K/V once for this utterance.
+        var projOut = try await project.run(
+            inputs: ["encoder_hidden_states": enc],
+            states: InferenceFunction.MutableViews())
+        guard let crossK = projOut.remove("cross_k")?.ndArray,
+              let crossV = projOut.remove("cross_v")?.ndArray else {
+            throw ASRError.missingOutput("project_cross_kv outputs")
+        }
+
+        // Cross-attention mask [1,1,1,438]: 0 for valid encoder frames, -1e9 else.
+        var crossMask = NDArray(shape: [1, 1, 1, Self.tEnc], scalarType: .float32)
+        var crossMV = crossMask.mutableView(as: Float.self)
+        crossMV.withUnsafeMutablePointer { ptr, _, _ in
+            for j in 0..<Self.tEnc { ptr[j] = j < encLen ? 0 : Self.maskNeg }
+        }
+
+        var selfMask = NDArray(shape: [1, 1, 1, Self.maxCacheLen], scalarType: .float32)
+        var inputND = NDArray(shape: [1, 1], scalarType: .int32)
+        var posND = NDArray(shape: [1, 1], scalarType: .int32)
+
+        var emitted: [Int32] = []
+        var prev = Self.startToken
+        var hitEOS = false
+        for pos in 0..<Self.maxCacheLen {
+            inputND.setInt32(at: 0, to: prev)
+            posND.setInt32(at: 0, to: Int32(pos))
+            var selfMV = selfMask.mutableView(as: Float.self)
+            selfMV.withUnsafeMutablePointer { ptr, _, _ in
+                for j in 0..<Self.maxCacheLen { ptr[j] = j <= pos ? 0 : Self.maskNeg }
+            }
+
+            var states = InferenceFunction.MutableViews()
+            states.insert(&kCache, for: "k_cache")
+            states.insert(&vCache, for: "v_cache")
+            var out = try await step.run(
+                inputs: [
+                    "input_id": inputND, "position_id": posND,
+                    "self_attention_mask": selfMask, "cross_attention_mask": crossMask,
+                    "cross_k": crossK, "cross_v": crossV,
+                ],
+                states: states
+            )
+            guard let logits = out.remove("logits")?.ndArray else {
+                throw ASRError.missingOutput("decode_step_cached logits")
+            }
+
+            var maxV: Float = 0
+            var maxI: vDSP_Length = 0
+            logits.view(as: Float.self).withUnsafePointer { ptr, _, _ in
+                vDSP_maxvi(ptr, 1, &maxV, &maxI, vDSP_Length(logits.elementCount))
+            }
+            let next = Int32(maxI)
+            if Self.traceDecode {
+                FileHandle.standardError.write(Data("[cohere] pos=\(pos) tok=\(next)\n".utf8))
+            }
+            if next == Self.eosToken { hitEOS = true; break }
+            emitted.append(next)
+            prev = next
+        }
+        if !hitEOS {
+            FileHandle.standardError.write(Data((
+                "[cohere] warning: hit the \(Self.maxCacheLen)-token decode limit without EOS — "
+                + "transcript is likely TRUNCATED (clip exceeds the model's per-window token budget).\n").utf8))
+        }
+        return emitted
     }
 
     /// Greedy autoregressive decode with an external self-attention KV cache.

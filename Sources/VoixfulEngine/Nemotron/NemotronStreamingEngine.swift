@@ -162,12 +162,12 @@ public actor NemotronStreamingEngine {
         // after install: ~1s. Every subsequent launch: ~200ms.
         let model: AIModel
         do {
-            if let cached = try AIModelCache.default.model(for: modelURL, options: .default) {
+            if let cached = try AIModelCache.default.model(for: modelURL, options: specializationOptions()) {
                 model = cached
             } else {
                 model = try await AIModel.specialize(
                     contentsOf: modelURL,
-                    options: .default,
+                    options: specializationOptions(),
                     cache: AIModelCache.default,
                     cachePolicy: .persistent
                 )

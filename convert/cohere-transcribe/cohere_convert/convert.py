@@ -17,12 +17,19 @@ from .export import (
     MEL_FRAMES,
     N_MELS,
     encoder_example,
+    export_cached_decoder,
+    export_cross_kv_projector,
     export_decoder,
     export_encoder,
     trace_t_enc,
 )
 from .extract import DEFAULT_MODEL_ID, load_cohere
-from .models import CohereDecoderStepForCoreAI, CohereEncoderForCoreAI
+from .models import (
+    CohereCrossKVProjectorForCoreAI,
+    CohereDecoderStepCachedForCoreAI,
+    CohereDecoderStepForCoreAI,
+    CohereEncoderForCoreAI,
+)
 
 DEFAULT_OUTPUT = "./cohere-transcribe.aimodel"
 ENCODE_FN = "encode"
@@ -119,18 +126,34 @@ def main(argv: list[str] | None = None) -> int:
         encoder_wrapper = quantize_encoder(encoder_wrapper)
         print(f"Applied {args.quantize} compression to the encoder.")
 
-    print("Exporting encoder ...")
-    exported_encoder = export_encoder(encoder_wrapper)
     print("Exporting decoder_step ...")
     exported_decoder = export_decoder(decoder_wrapper, t_enc)
 
+    # Cached-decoder pair: cross-K/V projected once per utterance into state
+    # buffers; the per-step decoder reads them (and mutates the self-attention
+    # cache) via zero-copy states instead of threading ~14 MB/token of tensors.
+    projector_wrapper = CohereCrossKVProjectorForCoreAI(model).eval()
+    cached_decoder_wrapper = CohereDecoderStepCachedForCoreAI(
+        model, max_cache_len=CACHE_LEN
+    ).eval()
+    print("Exporting project_cross_kv ...")
+    exported_projector = export_cross_kv_projector(projector_wrapper, t_enc)
+    print("Exporting decode_step_cached ...")
+    exported_cached_decoder = export_cached_decoder(cached_decoder_wrapper, t_enc)
+
     converter = coreai_torch.TorchConverter()
-    converter.add_exported_program(
-        exported_encoder,
-        entrypoint_name=ENCODE_FN,
-        input_names=["input_features", "length"],
-        output_names=["encoder_hidden_states"],
-    )
+    # One encoder program per window; the largest (3500 — the decoder's traced
+    # T_enc contract) is the canonical `encode`, smaller are `encode_<frames>`.
+    # The runtime zero-pads a smaller window's output up to T_enc=438.
+    for w in windows:
+        name = ENCODE_FN if w == windows[-1] else f"{ENCODE_FN}_{w}"
+        print(f"Exporting encoder window {w} frames -> function '{name}' ...")
+        converter.add_exported_program(
+            export_encoder(encoder_wrapper, mel_frames=w),
+            entrypoint_name=name,
+            input_names=["input_features", "length"],
+            output_names=["encoder_hidden_states"],
+        )
     converter.add_exported_program(
         exported_decoder,
         entrypoint_name=DECODE_FN,
@@ -140,9 +163,32 @@ def main(argv: list[str] | None = None) -> int:
         ],
         output_names=["logits", "k_cache_out", "v_cache_out"],
     )
+    converter.add_exported_program(
+        exported_projector,
+        entrypoint_name="project_cross_kv",
+        input_names=["encoder_hidden_states"],
+        output_names=["cross_k", "cross_v"],
+    )
+    converter.add_exported_program(
+        exported_cached_decoder,
+        entrypoint_name="decode_step_cached",
+        input_names=[
+            "input_id", "position_id",
+            "self_attention_mask", "cross_attention_mask",
+            "cross_k", "cross_v",
+        ],
+        state_names=["k_cache", "v_cache"],
+        output_names=["logits"],
+    )
 
     ai_program = converter.to_coreai()
     ai_program.optimize()
+    if output_path.exists():
+        # save_asset refuses to overwrite (FileExistsError on main.mlirb);
+        # treat the output like any build artifact and replace it.
+        import shutil
+        shutil.rmtree(output_path)
+        print(f"Replaced existing {output_path}")
     ai_program.save_asset(output_path)
 
     # Bundle the SentencePiece vocab inside the .aimodel so the runtime is

@@ -44,11 +44,11 @@ public actor ParakeetTDTEngine {
     public init(modelURL: URL, piecesURL: URL) async throws {
         let model: AIModel
         do {
-            if let cached = try AIModelCache.default.model(for: modelURL, options: .default) {
+            if let cached = try AIModelCache.default.model(for: modelURL, options: specializationOptions()) {
                 model = cached
             } else {
                 model = try await AIModel.specialize(
-                    contentsOf: modelURL, options: .default,
+                    contentsOf: modelURL, options: specializationOptions(),
                     cache: AIModelCache.default, cachePolicy: .persistent
                 )
             }
