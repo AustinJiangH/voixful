@@ -80,6 +80,7 @@ public actor ParakeetTDTEngine {
         // zero-embedding input → the correct g_0. Without this the TDT joint emits
         // blank through the start of the utterance (the LM prior never engages).
         try await prediction.step(token: Self.blankId)
+        let t0 = CFAbsoluteTimeGetCurrent()
 
         // Mel → fixed [1, 128, 1000] NDArray (pad/truncate the time axis).
         let melFlat = await melExtractor.extract(samples: audio)  // row-major [128 × T]
@@ -108,6 +109,7 @@ public actor ParakeetTDTEngine {
         lenND.setInt32(at: 0, to: Int32(useT))
 
         // Full-context encode (no states).
+        let tMel = CFAbsoluteTimeGetCurrent()
         var outputs = try await encodeFn.run(
             inputs: ["mel": melND, "mel_length": lenND],
             states: InferenceFunction.MutableViews()
@@ -115,12 +117,17 @@ public actor ParakeetTDTEngine {
         guard let encOut = outputs.remove("enc_out")?.ndArray else {
             throw ASRError.missingOutput("enc_out")
         }
+        let tEnc = CFAbsoluteTimeGetCurrent()
 
         let emitted = try await tdtDecode(encOut: encOut, realFrames: useT)
         if Self.traceDecode {
-            FileHandle.standardError.write(Data(
-                "[parakeet] realT=\(realT) enc=\(encOut.shape) emitted=\(emitted.count)\n".utf8
-            ))
+            let tDec = CFAbsoluteTimeGetCurrent()
+            let line = String(
+                format: "[parakeet/timing] audio=%.1fs realT=%d useT=%d (window=%d) | "
+                    + "mel=%.0fms encode=%.0fms decode=%.0fms emitted=%d\n",
+                Double(audio.count) / 16_000, realT, useT, Self.melFrames,
+                (tMel - t0) * 1000, (tEnc - tMel) * 1000, (tDec - tEnc) * 1000, emitted.count)
+            FileHandle.standardError.write(Data(line.utf8))
         }
         // Batch decode produces one final transcript; per-token time alignment
         // (segments) is not surfaced yet, and language is model-auto-detected.

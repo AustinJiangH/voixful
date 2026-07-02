@@ -83,6 +83,7 @@ public actor CohereTranscribeEngine {
 
     public func transcribe(audio: [Float]) async throws -> Transcript {
         await melExtractor.reset()
+        let t0 = CFAbsoluteTimeGetCurrent()
 
         // Mel -> [1,128,3500], per-feature normalized over the real frames.
         let melFlat = await melExtractor.extract(samples: audio)  // [128 × T]
@@ -101,6 +102,7 @@ public actor CohereTranscribeEngine {
         }
         var lenND = NDArray(shape: [1], scalarType: .int32)
         lenND.setInt32(at: 0, to: Int32(useT))
+        let tMel = CFAbsoluteTimeGetCurrent()
 
         // Encode once.
         var encOut = try await encodeFn.run(
@@ -110,8 +112,23 @@ public actor CohereTranscribeEngine {
         guard let enc = encOut.remove("encoder_hidden_states")?.ndArray else {
             throw ASRError.missingOutput("encoder_hidden_states")
         }
+        let tEnc = CFAbsoluteTimeGetCurrent()
 
         let emitted = try await decode(enc: enc, encLen: Self.encLen(useT))
+        if Self.traceDecode {
+            let tDec = CFAbsoluteTimeGetCurrent()
+            let steps = emitted.count + 1
+            let audioS: Double = Double(audio.count) / 16_000
+            let melMS: Double = (tMel - t0) * 1000
+            let encMS: Double = (tEnc - tMel) * 1000
+            let decMS: Double = (tDec - tEnc) * 1000
+            let line = String(
+                format: "[cohere/timing] audio=%.1fs realT=%d useT=%d (window=%d) | "
+                    + "mel=%.0fms encode=%.0fms decode=%.0fms (%d steps, %.1fms/step)\n",
+                audioS, realT, useT, Self.melFrames, melMS, encMS, decMS, steps,
+                decMS / Double(steps))
+            FileHandle.standardError.write(Data(line.utf8))
+        }
         // Batch AED decode produces one final transcript; segments aren't surfaced
         // and the language is model-auto-detected.
         return Transcript(text: tokenizer.decode(emitted), segments: [], language: nil)
