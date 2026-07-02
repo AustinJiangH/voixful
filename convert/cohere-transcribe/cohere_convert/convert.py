@@ -86,7 +86,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--windows",
-        default="875,1750,3500",
+        default="440,875,1750,3500",
         help=(
             "Comma-separated encoder mel-frame windows. The traced encoder always "
             "runs its full window, so a short clip in the 35 s window burns 48-layer "
