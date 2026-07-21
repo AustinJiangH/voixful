@@ -32,6 +32,10 @@ public actor CohereTranscribeEngine {
     private let encodeWindows: [(frames: Int, name: String)]
     /// Lazily loaded functions, keyed by name.
     private var loaded: [String: InferenceFunction] = [:]
+    /// In-flight background loads (prewarm). `fn(_:)` awaits these instead of
+    /// duplicating a load — loadFunction on the 2B palettized encoder costs
+    /// ~1.1 s of weight materialization per function.
+    private var pending: [String: Task<InferenceFunction?, Never>] = [:]
     private let tokenizer: SentencePieceTokenizer
     private let melExtractor: MelExtractor
 
@@ -89,14 +93,47 @@ public actor CohereTranscribeEngine {
     }
 
     /// Load (and cache) a function by name — lazy so only the window/decoder
-    /// variant a clip actually uses gets specialized.
-    private func fn(_ name: String) throws -> InferenceFunction {
+    /// variant a clip actually uses gets specialized. Awaits an in-flight
+    /// prewarm load of the same name rather than loading twice.
+    private func fn(_ name: String) async throws -> InferenceFunction {
         if let f = loaded[name] { return f }
+        if let t = pending.removeValue(forKey: name) {
+            if let f = await t.value {
+                loaded[name] = f
+                return f
+            }
+            // Prewarm failed; fall through to a direct load for the real error.
+        }
         guard let f = try model.loadFunction(named: name) else {
             throw ASRError.missingFunction(name)
         }
         loaded[name] = f
         return f
+    }
+
+    /// Kick off background loads of the functions a session will most likely
+    /// need, so their ~1.1 s (encoder window) weight materialization overlaps
+    /// audio capture / app idle instead of the first `transcribe()`. Returns
+    /// immediately. `VOIXFUL_PREWARM=0` disables. Only the smallest encoder
+    /// window is prewarmed — window choice depends on clip length, and eagerly
+    /// materializing every window is the ~52 GB fp16 lesson; on a wrong guess
+    /// the right window loads lazily exactly as before.
+    public func prewarm() {
+        guard ProcessInfo.processInfo.environment["VOIXFUL_PREWARM"] != "0" else { return }
+        var names: [String] = []
+        if available.contains("project_cross_kv") { names.append("project_cross_kv") }
+        for decode in ["decode_x4", "decode_step_fused", "decode_step_cached", "decode_step"]
+        where available.contains(decode) {
+            names.append(decode)
+            break
+        }
+        names.append(encodeWindows.first?.name ?? "encode")
+        for name in names where loaded[name] == nil && pending[name] == nil {
+            let model = self.model
+            pending[name] = Task.detached(priority: .utility) {
+                (try? model.loadFunction(named: name)) ?? nil
+            }
+        }
     }
 
     /// Encoder valid output length for `realFrames` mel frames — three stride-2
@@ -120,7 +157,7 @@ public actor CohereTranscribeEngine {
         let realT = melFlat.count / Self.nMels
         let picked = pickEncodeWindow(encodeWindows, realFrames: realT)
         let window = picked?.frames ?? Self.melFrames
-        let encode = try fn(picked?.name ?? "encode")
+        let encode = try await fn(picked?.name ?? "encode")
         let tLoad = CFAbsoluteTimeGetCurrent()
         let useT = min(realT, window)
         let normFlat = perFeatureNormalize(melFlat, nMels: Self.nMels, frames: realT)
@@ -167,18 +204,18 @@ public actor CohereTranscribeEngine {
         let hasProject = available.contains("project_cross_kv")
         if hasProject, available.contains("decode_x4") {
             emitted = try await decodeX4(
-                project: try fn("project_cross_kv"), step: try fn("decode_x4"),
+                project: try await fn("project_cross_kv"), step: try await fn("decode_x4"),
                 enc: enc, encLen: Self.encLen(useT))
         } else if hasProject, available.contains("decode_step_fused") {
             emitted = try await decodeFused(
-                project: try fn("project_cross_kv"), step: try fn("decode_step_fused"),
+                project: try await fn("project_cross_kv"), step: try await fn("decode_step_fused"),
                 enc: enc, encLen: Self.encLen(useT))
         } else if hasProject, available.contains("decode_step_cached") {
             emitted = try await decodeCached(
-                project: try fn("project_cross_kv"), step: try fn("decode_step_cached"),
+                project: try await fn("project_cross_kv"), step: try await fn("decode_step_cached"),
                 enc: enc, encLen: Self.encLen(useT))
         } else {
-            emitted = try await decode(step: try fn("decode_step"), enc: enc, encLen: Self.encLen(useT))
+            emitted = try await decode(step: try await fn("decode_step"), enc: enc, encLen: Self.encLen(useT))
         }
         if Self.traceDecode {
             let tDec = CFAbsoluteTimeGetCurrent()

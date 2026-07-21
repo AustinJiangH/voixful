@@ -78,15 +78,39 @@ public actor ParakeetTDTEngine {
         self.melExtractor = MelExtractor(frameStartOffset: (512 - 400) / 2)
     }
 
+    /// In-flight background loads (prewarm); see `prewarm()`.
+    private var pending: [String: Task<InferenceFunction?, Never>] = [:]
+
     /// Load (and cache) an encode function by name — lazy so only the window a
-    /// clip actually uses gets specialized.
-    private func fn(_ name: String) throws -> InferenceFunction {
+    /// clip actually uses gets specialized. Awaits an in-flight prewarm load
+    /// of the same name rather than loading twice.
+    private func fn(_ name: String) async throws -> InferenceFunction {
         if let f = loaded[name] { return f }
+        if let t = pending.removeValue(forKey: name) {
+            if let f = await t.value {
+                loaded[name] = f
+                return f
+            }
+        }
         guard let f = try model.loadFunction(named: name) else {
             throw ASRError.missingFunction(name)
         }
         loaded[name] = f
         return f
+    }
+
+    /// Background-load the smallest encoder window so its weight
+    /// materialization overlaps audio capture instead of the first
+    /// `transcribe()` (predict/join already load eagerly in init — they are
+    /// tiny). Returns immediately. `VOIXFUL_PREWARM=0` disables.
+    public func prewarm() {
+        guard ProcessInfo.processInfo.environment["VOIXFUL_PREWARM"] != "0" else { return }
+        let name = encodeWindows.first?.name ?? "encode"
+        guard loaded[name] == nil, pending[name] == nil else { return }
+        let model = self.model
+        pending[name] = Task.detached(priority: .utility) {
+            (try? model.loadFunction(named: name)) ?? nil
+        }
     }
 
     /// Transcribe a complete 16 kHz mono clip (full-context, one shot).
@@ -109,7 +133,7 @@ public actor ParakeetTDTEngine {
         let realT = melFlat.count / Self.nMels
         let picked = pickEncodeWindow(encodeWindows, realFrames: realT)
         let window = picked?.frames ?? Self.melFrames
-        let encode = try fn(picked?.name ?? "encode")
+        let encode = try await fn(picked?.name ?? "encode")
         let useT = min(realT, window)
 
         // Parakeet's preprocessor uses `normalize: per_feature` (confirmed in the
