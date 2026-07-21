@@ -37,6 +37,27 @@ class CohereEncoderForCoreAI(nn.Module):
         return x
 
 
+def _fused_qkv(layers) -> nn.ModuleList:
+    """One [hidden -> 3*hidden] Linear per layer replacing the three separate
+    self-attention q/k/v projections — 1 matmul dispatch instead of 3. Weights
+    are concatenated copies; the originals go uncaptured by torch.export since
+    forward no longer touches them, so asset size is unchanged."""
+    fused = nn.ModuleList()
+    for layer in layers:
+        a = layer.first_sub_layer
+        w = torch.cat([a.query_net.weight, a.key_net.weight, a.value_net.weight], dim=0)
+        has_bias = a.query_net.bias is not None
+        lin = nn.Linear(w.shape[1], w.shape[0], bias=has_bias)
+        with torch.no_grad():
+            lin.weight.copy_(w)
+            if has_bias:
+                lin.bias.copy_(
+                    torch.cat([a.query_net.bias, a.key_net.bias, a.value_net.bias], dim=0)
+                )
+        fused.append(lin)
+    return fused
+
+
 class CohereDecoderStepForCoreAI(nn.Module):
     """One autoregressive decoder step with an external self-attention KV cache."""
 
@@ -53,6 +74,7 @@ class CohereDecoderStepForCoreAI(nn.Module):
         self.hidden_size = first_attn.hidden_size
         self.n_layers = len(self.layers)
         self.max_cache_len = max_cache_len
+        self.qkv = _fused_qkv(self.layers)
 
     def _heads(self, attn, x):
         # [1, t, hidden] -> [1, heads, t, head_dim]
@@ -91,12 +113,14 @@ class CohereDecoderStepForCoreAI(nn.Module):
 
         # One-hot over the cache axis so we write new K/V at `position_id` without
         # a dynamic scatter (export-friendly): cache' = cache*(1-oh) + new*oh.
+        # `oh` stays a [1,1,M,1] broadcast — coreai-torch 0.4.1 converts stride-0
+        # broadcast multiplies correctly (toy-verified bit-exact; the 0.4.0 leak
+        # that forced full .repeat() materialization is fixed), so each cache
+        # write is one fused elementwise kernel instead of repeat+multiply over
+        # a materialized [1,H,M,D].
         idx = torch.arange(self.max_cache_len, device=h.device).view(1, -1)  # [1,M]
         sel = (idx == position_id.view(-1, 1)).to(h.dtype)                   # [1,M]
-        # Materialize the selector to full [1,H,M,D] with repeat, NOT a stride-0
-        # broadcast view: coreai_torch mis-converts broadcast multiplies of a
-        # size-1 dim (the new K/V leaked into every cache slot, off by ~5).
-        oh = sel.view(1, 1, self.max_cache_len, 1).repeat(1, self.num_heads, 1, self.head_dim)
+        oh = sel.view(1, 1, self.max_cache_len, 1)                           # [1,1,M,1]
 
         new_k, new_v = [], []
         for i, layer in enumerate(self.layers):
@@ -104,13 +128,13 @@ class CohereDecoderStepForCoreAI(nn.Module):
             residual = h
             hn = layer.layer_norm_1(h)
             a = layer.first_sub_layer
-            q = self._heads(a, a.query_net(hn))   # [1,H,1,D]
-            nk = self._heads(a, a.key_net(hn))    # [1,H,1,D]
-            nv = self._heads(a, a.value_net(hn))
-            nk_full = nk.repeat(1, 1, self.max_cache_len, 1)  # [1,H,M,D] (real copy)
-            nv_full = nv.repeat(1, 1, self.max_cache_len, 1)
-            kc = k_cache[i] * (1.0 - oh) + nk_full * oh
-            vc = v_cache[i] * (1.0 - oh) + nv_full * oh
+            qkv = self.qkv[i](hn)                 # [1,1,3*hidden], 1 matmul
+            qh, kh, vh = qkv.chunk(3, dim=-1)
+            q = self._heads(a, qh)                # [1,H,1,D]
+            nk = self._heads(a, kh)               # [1,H,1,D]
+            nv = self._heads(a, vh)
+            kc = k_cache[i] * (1.0 - oh) + nk * oh  # [1,H,M,D] via broadcast
+            vc = v_cache[i] * (1.0 - oh) + nv * oh
             new_k.append(kc)
             new_v.append(vc)
             attn = self._attention(q, kc, vc, self_attention_mask, a.scale)
@@ -204,6 +228,7 @@ class CohereDecoderStepCachedForCoreAI(nn.Module):
             "v_cache",
             torch.zeros(self.n_layers, 1, self.num_heads, max_cache_len, self.head_dim),
         )
+        self.qkv = _fused_qkv(self.layers)
 
     def _heads(self, attn, x):
         b, t, _ = x.shape
@@ -236,7 +261,7 @@ class CohereDecoderStepCachedForCoreAI(nn.Module):
 
         idx = torch.arange(self.max_cache_len, device=h.device).view(1, -1)
         sel = (idx == position_id.view(-1, 1)).to(h.dtype)
-        oh = sel.view(1, 1, self.max_cache_len, 1).repeat(1, self.num_heads, 1, self.head_dim)
+        oh = sel.view(1, 1, self.max_cache_len, 1)  # broadcast; see stateless class
 
         new_k, new_v = [], []
         for i, layer in enumerate(self.layers):
@@ -244,13 +269,13 @@ class CohereDecoderStepCachedForCoreAI(nn.Module):
             residual = h
             hn = layer.layer_norm_1(h)
             a = layer.first_sub_layer
-            q = self._heads(a, a.query_net(hn))
-            nk = self._heads(a, a.key_net(hn))
-            nv = self._heads(a, a.value_net(hn))
-            nk_full = nk.repeat(1, 1, self.max_cache_len, 1)
-            nv_full = nv.repeat(1, 1, self.max_cache_len, 1)
-            kc = self.k_cache[i] * (1.0 - oh) + nk_full * oh
-            vc = self.v_cache[i] * (1.0 - oh) + nv_full * oh
+            qkv = self.qkv[i](hn)
+            qh, kh, vh = qkv.chunk(3, dim=-1)
+            q = self._heads(a, qh)
+            nk = self._heads(a, kh)
+            nv = self._heads(a, vh)
+            kc = self.k_cache[i] * (1.0 - oh) + nk * oh
+            vc = self.v_cache[i] * (1.0 - oh) + nv * oh
             new_k.append(kc)
             new_v.append(vc)
             attn = self._attention(q, kc, vc, self_attention_mask, a.scale)
@@ -306,20 +331,20 @@ class CohereDecoderX4ForCoreAI(CohereDecoderStepCachedForCoreAI):
 
         h = self.embedding(cur_id, pos.view(1, 1))
         sel = (sidx == pos).to(h.dtype)
-        oh = sel.view(1, 1, self.max_cache_len, 1).repeat(1, self.num_heads, 1, self.head_dim)
+        oh = sel.view(1, 1, self.max_cache_len, 1)  # broadcast; see stateless class
 
         new_k, new_v = [], []
         for i, layer in enumerate(self.layers):
             residual = h
             hn = layer.layer_norm_1(h)
             a = layer.first_sub_layer
-            q = self._heads(a, a.query_net(hn))
-            nk = self._heads(a, a.key_net(hn))
-            nv = self._heads(a, a.value_net(hn))
-            nk_full = nk.repeat(1, 1, self.max_cache_len, 1)
-            nv_full = nv.repeat(1, 1, self.max_cache_len, 1)
-            kc = k_all[i] * (1.0 - oh) + nk_full * oh
-            vc = v_all[i] * (1.0 - oh) + nv_full * oh
+            qkv = self.qkv[i](hn)
+            qh, kh, vh = qkv.chunk(3, dim=-1)
+            q = self._heads(a, qh)
+            nk = self._heads(a, kh)
+            nv = self._heads(a, vh)
+            kc = k_all[i] * (1.0 - oh) + nk * oh
+            vc = v_all[i] * (1.0 - oh) + nv * oh
             new_k.append(kc)
             new_v.append(vc)
             attn = self._attention(q, kc, vc, self_mask, a.scale)

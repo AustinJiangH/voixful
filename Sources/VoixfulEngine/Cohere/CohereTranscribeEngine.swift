@@ -19,6 +19,12 @@ import Foundation
 
 public actor CohereTranscribeEngine {
     private let model: AIModel
+    /// Model instance the decoder-side functions load from. Same as `model`
+    /// unless `VOIXFUL_COHERE_DECODER_ASSET` points at the decoder-only
+    /// companion asset (see convert.py --decoder-asset), which is the only way
+    /// to give the decoder its own compute-unit placement
+    /// (`VOIXFUL_COMPUTE_DECODE`) — specialization is whole-asset.
+    private let decodeModel: AIModel
     /// Function names present in the asset. Functions are loaded LAZILY (see
     /// `fn(_:)`) — `loadFunction` specializes the graph, and eagerly loading
     /// every window/decoder variant materializes a specialized weight set per
@@ -69,6 +75,24 @@ public actor CohereTranscribeEngine {
             throw ASRError.modelLoadFailed("specialize(\(modelURL.path)): \(error)")
         }
         self.model = model
+        if let decPath = ProcessInfo.processInfo.environment["VOIXFUL_COHERE_DECODER_ASSET"] {
+            let decURL = URL(fileURLWithPath: decPath)
+            let opts = decodeSpecializationOptions() ?? specializationOptions()
+            do {
+                if let cached = try AIModelCache.default.model(for: decURL, options: opts) {
+                    self.decodeModel = cached
+                } else {
+                    self.decodeModel = try await AIModel.specialize(
+                        contentsOf: decURL, options: opts,
+                        cache: AIModelCache.default, cachePolicy: .persistent
+                    )
+                }
+            } catch {
+                throw ASRError.modelLoadFailed("decoder asset specialize(\(decPath)): \(error)")
+            }
+        } else {
+            self.decodeModel = model
+        }
         let names = try ModelBackend.assetFunctions(modelURL: modelURL).names
         guard names.contains("encode") else { throw ASRError.missingFunction("encode") }
         // Any one decode entrypoint suffices; lean assets ship only the cached
@@ -92,6 +116,15 @@ public actor CohereTranscribeEngine {
         self.melExtractor = MelExtractor(frameStartOffset: (512 - 400) / 2)
     }
 
+    /// Decoder-side function names load from `decodeModel` (the companion
+    /// asset when configured); encoder windows from the primary `model`.
+    private static let decoderFns: Set<String> = [
+        "project_cross_kv", "decode_x4", "decode_step_fused", "decode_step_cached", "decode_step",
+    ]
+    private func modelFor(_ name: String) -> AIModel {
+        Self.decoderFns.contains(name) ? decodeModel : model
+    }
+
     /// Load (and cache) a function by name — lazy so only the window/decoder
     /// variant a clip actually uses gets specialized. Awaits an in-flight
     /// prewarm load of the same name rather than loading twice.
@@ -104,7 +137,7 @@ public actor CohereTranscribeEngine {
             }
             // Prewarm failed; fall through to a direct load for the real error.
         }
-        guard let f = try model.loadFunction(named: name) else {
+        guard let f = try modelFor(name).loadFunction(named: name) else {
             throw ASRError.missingFunction(name)
         }
         loaded[name] = f
@@ -129,7 +162,7 @@ public actor CohereTranscribeEngine {
         }
         names.append(encodeWindows.first?.name ?? "encode")
         for name in names where loaded[name] == nil && pending[name] == nil {
-            let model = self.model
+            let model = modelFor(name)
             pending[name] = Task.detached(priority: .utility) {
                 (try? model.loadFunction(named: name)) ?? nil
             }

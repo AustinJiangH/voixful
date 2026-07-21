@@ -85,6 +85,18 @@ def main(argv: list[str] | None = None) -> int:
         help="Encoder compression (>90%% of params): palette4 = the RAM win.",
     )
     parser.add_argument(
+        "--decoder-asset",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Also write <output stem>-decoder.aimodel containing only "
+            "project_cross_kv + decode_step_fused + decode_x4. A separate "
+            "asset is the only way to give the decoder its own compute-unit "
+            "placement: AIModel specialization is whole-asset, so pinning the "
+            "shared asset drags the (ANE/GPU-only palettized) encoder along."
+        ),
+    )
+    parser.add_argument(
         "--legacy-decoders",
         action="store_true",
         help=(
@@ -253,6 +265,38 @@ def main(argv: list[str] | None = None) -> int:
     (output_path / "pieces.txt").write_text("\n".join(pieces) + "\n", encoding="utf-8")
 
     print(f"Wrote {output_path} (quantize={args.quantize}, T_enc={t_enc}) + pieces.txt ({len(pieces)}).")
+
+    if args.decoder_asset:
+        dec_path = output_path.with_name(output_path.stem + "-decoder.aimodel")
+        dec_converter = coreai_torch.TorchConverter()
+        dec_converter.add_exported_program(
+            exported_projector,
+            entrypoint_name="project_cross_kv",
+            input_names=["encoder_hidden_states"],
+            output_names=["cross_k", "cross_v"],
+        )
+        dec_converter.add_exported_program(
+            exported_fused_decoder,
+            entrypoint_name="decode_step_fused",
+            input_names=["input_id", "position_id", "enc_len", "cross_k", "cross_v"],
+            state_names=["k_cache", "v_cache"],
+            output_names=["token"],
+        )
+        dec_converter.add_exported_program(
+            exported_x4_decoder,
+            entrypoint_name="decode_x4",
+            input_names=["input_id", "position_id", "enc_len", "cross_k", "cross_v"],
+            state_names=["k_cache", "v_cache"],
+            output_names=["tokens"],
+        )
+        dec_program = dec_converter.to_coreai()
+        dec_program.optimize()
+        if dec_path.exists():
+            import shutil
+            shutil.rmtree(dec_path)
+            print(f"Replaced existing {dec_path}")
+        dec_program.save_asset(dec_path)
+        print(f"Wrote {dec_path} (decoder-only companion for per-function placement).")
     return 0
 
 
