@@ -23,6 +23,7 @@ from .export import (
     export_encoder,
     export_fused_decoder,
     export_x4_decoder,
+    fused_decoder_example,
     trace_t_enc,
 )
 from .extract import DEFAULT_MODEL_ID, load_cohere
@@ -74,6 +75,33 @@ def _build_quantizer(kind: str):
     raise ValueError(kind)
 
 
+def _build_decoder_quantizer(kind: str, t_enc: int):
+    """Decoder (decode_x4) compressor. The ~4.6 ms/step decode floor measured
+    on M5 Pro is placement- and kernel-count-invariant — it is the ~0.3 GB of
+    fp16 decoder+head weights re-streamed EVERY token. Palettization cuts that
+    stream ~2.7x (palette6) to ~4x (palette4). Applied to the x4 wrapper only:
+    decode_step_fused stays fp16 as the parity fallback."""
+    if kind == "none":
+        return None
+    example = fused_decoder_example(t_enc)
+    if kind in ("palette4", "palette6"):
+        from coreai_opt.palettization import KMeansPalettizer, KMeansPalettizerConfig
+
+        preset = {
+            "palette4": KMeansPalettizerConfig.presets.w4,
+            "palette6": KMeansPalettizerConfig.presets.w6,
+        }[kind]
+        cfg = preset()
+
+        def p(dec):
+            pp = KMeansPalettizer(dec, cfg)
+            pp.prepare(example_inputs=example)
+            return pp.finalize()
+
+        return p
+    raise ValueError(kind)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="cohere-convert")
     parser.add_argument("--model-id", default=DEFAULT_MODEL_ID)
@@ -83,6 +111,18 @@ def main(argv: list[str] | None = None) -> int:
         choices=["none", "int8", "palette4", "palette6"],
         default="none",
         help="Encoder compression (>90%% of params): palette4 = the RAM win.",
+    )
+    parser.add_argument(
+        "--quantize-decoder",
+        choices=["none", "palette4", "palette6"],
+        default="none",
+        help=(
+            "Compress decode_x4's weights (decoder layers + 16384-vocab head). "
+            "Decode is weight-bandwidth-bound (~0.3 GB fp16 re-streamed per "
+            "token); palette6 is the parity-safe first step. decode_step_fused "
+            "keeps fp16 weights as a fallback. Token-exact parity vs the fp16 "
+            "decoder must be verified before shipping."
+        ),
     )
     parser.add_argument(
         "--decoder-asset",
@@ -178,6 +218,10 @@ def main(argv: list[str] | None = None) -> int:
     x4_decoder_wrapper = CohereDecoderX4ForCoreAI(
         model, t_enc=t_enc, max_cache_len=CACHE_LEN
     ).eval()
+    quantize_decoder = _build_decoder_quantizer(args.quantize_decoder, t_enc)
+    if quantize_decoder is not None:
+        x4_decoder_wrapper = quantize_decoder(x4_decoder_wrapper)
+        print(f"Applied {args.quantize_decoder} compression to decode_x4.")
     print("Exporting decode_x4 ...")
     exported_x4_decoder = export_x4_decoder(x4_decoder_wrapper, t_enc)
 

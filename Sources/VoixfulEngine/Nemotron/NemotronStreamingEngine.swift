@@ -113,15 +113,11 @@ public actor NemotronStreamingEngine {
     /// time we need to repack frames into the encoder's `[1, 128, T]` shape.
     private static let nMels: Int = 128
 
-    /// The fixed mel-frame count the converted `.aimodel` accepts. The current
-    /// convert.py pins T=128 (smallest multiple of 8 ≥ 121, the streaming-cfg
-    /// minimum) because coreai_torch 0.4.0 hits a dynamic-shape lowering bug
-    /// on `aten.repeat`. Once that's fixed upstream we can re-introduce the
-    /// `ChunkSize` dial and export a variable-T encoder.
-    ///
-    /// `ChunkSize` is still surfaced on the public API for forward compat —
-    /// today every chunk-size case routes through this same T=128 hardcode.
-    private static let encoderFramesPerChunk: Int = 128
+    /// Mel frames fed to the encoder per streaming chunk — the frame length of
+    /// the encoder window program selected at init. Multi-window assets let
+    /// `ChunkSize` pick a real cadence (e.g. `encode_32` -> 320 ms partials);
+    /// single-window assets keep the historic 128-frame (1.28 s) cadence.
+    private let encoderFramesPerChunk: Int
 
     // MARK: - Init
 
@@ -187,7 +183,21 @@ public actor NemotronStreamingEngine {
         // the Swift MelExtractor, so a model without the baked preprocessor can
         // still run streaming.
         self.preprocess = try? await PreprocessSession(model: model)
-        self.encoder = try await EncoderSession(model: model)
+
+        // Pick the encoder window program for the requested ChunkSize.
+        // `totalFrames` is in 80 ms encoder frames; the mel hop is 10 ms and
+        // the subsampling stack folds 8 mel frames -> 1 encoder frame, so the
+        // needed mel chunk is totalFrames*8. Choose the smallest exported
+        // window that fits; single-window assets fall back to the canonical
+        // 128-frame `encode` (the historic 1.28 s cadence).
+        let names = (try? ModelBackend.assetFunctions(modelURL: modelURL).names) ?? ["encode"]
+        var windows = encodeWindowNames(names)
+        windows.append((frames: 128, name: "encode"))
+        windows.sort { $0.frames < $1.frames }
+        let wantMelFrames = chunkSize.totalFrames * 8
+        let picked = windows.first { $0.frames >= wantMelFrames } ?? (frames: 128, name: "encode")
+        self.encoderFramesPerChunk = picked.frames
+        self.encoder = try await EncoderSession(model: model, functionName: picked.name)
 
         // VOIXFUL_COMPUTE_DECODE: place the tiny predict/join functions on a
         // different compute unit than the encoder via a second AIModel
@@ -377,7 +387,7 @@ public actor NemotronStreamingEngine {
 
         // Now consume as many chunks as we have. Each chunk needs
         // `chunkSize.totalFrames` mel frames.
-        let framesPerChunk = Self.encoderFramesPerChunk
+        let framesPerChunk = encoderFramesPerChunk
         var partials: [PartialHypothesis] = []
 
         while melBufferFrames >= framesPerChunk {
@@ -517,7 +527,7 @@ public actor NemotronStreamingEngine {
         let chunkSamples = PreprocessSession.chunkSamples          // 20320
         let leftContext = PreprocessSession.leftContextSamples     // 512
         let inputSamples = PreprocessSession.audioSamples          // 20832
-        let framesPerChunk = Self.encoderFramesPerChunk
+        let framesPerChunk = encoderFramesPerChunk
 
         // Prepend a chunk of silence to warm the encoder's cache. Costs ~30 ms
         // (one extra chunk of preprocess + encoder + decoder); recovers the
@@ -661,7 +671,7 @@ public actor NemotronStreamingEngine {
         // tail-token drift caused by this padding. If NeMo's reference uses
         // a different padding convention (e.g., reflect, or right-context
         // truncation with a shorter final chunk), match it here.
-        let framesPerChunk = Self.encoderFramesPerChunk
+        let framesPerChunk = encoderFramesPerChunk
         if melBufferFrames > 0 && melBufferFrames < framesPerChunk {
             // Zero-pad the mel buffer in row-major order: each row m gets
             // (framesPerChunk - melBufferFrames) zeros appended after its

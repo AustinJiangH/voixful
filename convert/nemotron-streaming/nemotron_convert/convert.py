@@ -23,7 +23,6 @@ from .models import (
 # checkpoint once the upstream class lands in a NeMo release.
 DEFAULT_MODEL_ID = "nvidia/nemotron-speech-streaming-en-0.6b"
 DEFAULT_OUTPUT = "./nemotron-streaming.aimodel"
-DEFAULT_MAX_CHUNK_FRAMES = 256  # Headroom — the real model wants min 121 frames per its streaming cfg.
 
 # The three named functions packed into a single multi-function .aimodel per
 # PLAN.md §3 Step 4 and Decision Log #3.
@@ -44,10 +43,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--model-id", default=DEFAULT_MODEL_ID)
     parser.add_argument("--output", default=DEFAULT_OUTPUT)
     parser.add_argument(
-        "--max-chunk-frames",
-        type=int,
-        default=DEFAULT_MAX_CHUNK_FRAMES,
-        help="Upper bound on dynamic mel time axis (10 ms hop). 112 == 1120 ms.",
+        "--windows",
+        default="32,128,256",
+        help=(
+            "Comma-separated encoder chunk lengths in mel frames (10 ms hop), "
+            "each exported as its own fixed-shape program against the SHARED "
+            "streaming caches. 128 is required (the canonical 'encode' — "
+            "runtime back-compat contract); others become 'encode_<frames>'. "
+            "32 == the 320 ms low-latency streaming cadence; 256 == the "
+            "batch-throughput chunk."
+        ),
     )
     parser.add_argument(
         "--quantize",
@@ -152,30 +157,36 @@ def main(argv: list[str] | None = None) -> int:
         encoder_wrapper = quantize_encoder(encoder_wrapper)
         print("Applied INT8 weight-only quantization to the encoder (presets.w8).")
 
-    # Step (c): torch.export each.
-    exported_encoder = export_encoder(encoder_wrapper, max_chunk_frames=args.max_chunk_frames)
+    # Step (c): torch.export the shared modules; the encoder once per window.
+    windows = sorted({int(w) for w in args.windows.split(",")})
+    assert 128 in windows, "--windows must include 128 (the canonical 'encode' contract)"
     exported_prediction = export_prediction(prediction_wrapper)
     exported_joiner = export_joiner(joiner_wrapper)
 
     # Step (d): pack into one multi-function .aimodel per PLAN.md §3 Step 4.
     converter = coreai_torch.TorchConverter()
 
-    converter.add_exported_program(
-        exported_encoder,
-        entrypoint_name=ENCODE_FN,
-        # English-only checkpoint has no language conditioning; input is
-        # (mel_chunk, mel_length). The multilingual variant adds a lang_id
-        # input — re-add when switching back to the 40-language checkpoint.
-        input_names=["mel_chunk", "mel_length"],
-        # Three streaming caches per the verified shapes; no `pre_cache` in
-        # this checkpoint (see models.py header).
-        state_names=[
-            "cache_last_channel",
-            "cache_last_time",
-            "cache_last_channel_len",
-        ],
-        output_names=["enc_out"],
-    )
+    for w in windows:
+        name = ENCODE_FN if w == 128 else f"{ENCODE_FN}_{w}"
+        print(f"Exporting encoder chunk window {w} frames -> function '{name}' ...")
+        converter.add_exported_program(
+            export_encoder(encoder_wrapper, chunk_frames=w),
+            entrypoint_name=name,
+            # English-only checkpoint has no language conditioning; input is
+            # (mel_chunk, mel_length). The multilingual variant adds a lang_id
+            # input — re-add when switching back to the 40-language checkpoint.
+            input_names=["mel_chunk", "mel_length"],
+            # Three streaming caches per the verified shapes; no `pre_cache` in
+            # this checkpoint (see models.py header). All windows SHARE these
+            # states — cache shapes derive from the left context, which is
+            # window-invariant.
+            state_names=[
+                "cache_last_channel",
+                "cache_last_time",
+                "cache_last_channel_len",
+            ],
+            output_names=["enc_out"],
+        )
     converter.add_exported_program(
         exported_prediction,
         entrypoint_name=PREDICT_STEP_FN,

@@ -15,27 +15,20 @@ from .models import (
 
 def export_encoder(
     wrapper: NemotronEncoderForCoreAI,
-    max_chunk_frames: int = 112,
+    chunk_frames: int = 128,
 ) -> ExportedProgram:
-    """Export the encoder wrapper with a dynamic time axis covering all five chunk
-    sizes from PLAN.md §2 (worst case 1120 ms = 112 frames at 10 ms hop).
-
-    VERIFY: dynamic-shape survival — PLAN.md §10 open question 5 asks whether the
-    dynamic `mel_T` dimension survives `coreai_torch` conversion. If conversion
-    rejects it, fall back to one exported program per chunk size (5 total) per
-    PLAN.md §3 Step 3 and Phase 2 final task.
+    """Export the encoder wrapper at ONE fixed chunk length (`chunk_frames` mel
+    frames). Dynamic-shape export hits a coreai_torch lowering bug on
+    `aten.repeat` with a symbolic count, so the runtime instead selects among
+    several fixed-shape window programs (`encode` = canonical 128-frame chunk;
+    `encode_<frames>` variants). The cache-aware FastConformer accepts any
+    chunk length against the SAME cache tensors — cache shapes derive from the
+    left context, which doesn't change per window — so all windows share the
+    streaming state. 32 frames = the 320 ms dictation/captioning cadence;
+    256 = batch-throughput chunk (pairs with a future baked preprocessor).
     """
-
-    # Fixed-shape export: T=128 (the smallest multiple of 8 ≥ 121, the streaming-cfg
-    # minimum). Dynamic-shape export hits a coreai_torch 0.4.0 lowering bug on
-    # `aten.repeat` whose count is a symbolic int rather than a Python int — the
-    # framework's `replace_repeat` decomposition assumes a literal. Until that's
-    # fixed upstream, ship one fixed-shape `.aimodel` per chunk size that matters.
-    # The 128-frame chunk corresponds to the larger (1120 ms-ish) streaming
-    # variant; smaller chunks would re-export with `example_T=8*k` for k∈{15..16}.
-    example_T = 128
-    example_mel = torch.zeros(1, 128, example_T, dtype=torch.float32)
-    example_length = torch.tensor([example_T], dtype=torch.int32)
+    example_mel = torch.zeros(1, 128, chunk_frames, dtype=torch.float32)
+    example_length = torch.tensor([chunk_frames], dtype=torch.int32)
 
     exported = torch.export.export(
         wrapper,
