@@ -72,9 +72,9 @@ Warm per-utterance numbers, M5 Pro, 5.5 s clip, palette4 assets:
 
 | Backend | Wall (session-style) | Stage split | Notes |
 |---|---|---|---|
-| Nemotron (streaming) | ~0.20 s | mel 1 / encode 138 / decode 58 ms | partials every 0.72 s with `--chunk 560` (was 1.28 s) |
-| Nemotron (batch) | ~0.28 s | mel 6 / encode 164 / decode 113 ms | better transcripts (full-context mel); needs `preprocess_audio` in the asset |
-| Parakeet (full-context) | ~0.10 s | mel 2 / encode 58 / decode 38 ms | fused `join_fused` path on new assets |
+| Nemotron (streaming) | ~0.15 s | mel 1 / encode 138 / decode ~7 ms | partials every 0.72 s with `--chunk 560` (was 1.28 s) |
+| Nemotron (batch) | ~0.18 s | mel 7 / encode 160 / decode 14 ms | better transcripts (full-context mel); needs `preprocess_audio` in the asset |
+| Parakeet (full-context) | ~0.07 s | mel 2 / encode 56 / decode 15 ms | CPU transducer decode via the `.transducer` sidecar |
 | Cohere 2B (AED) | ~0.29 s | mel 1 / encode 127 / decode 160 ms | + ~1.1 s one-time encoder window load, hidden by `prepare()` prewarm in session use |
 
 - **Multi-window encoders** (all three backends): the runtime picks the smallest

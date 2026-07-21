@@ -230,7 +230,10 @@ public actor NemotronStreamingEngine {
         // header.
         self.decoder = GreedyRNNTDecoder(
             prediction: self.prediction,
-            joiner: self.joiner
+            joiner: self.joiner,
+            // CPU predict/join when the <asset>.transducer sidecar exists
+            // (dump_transducer.py) — bypasses the per-dispatch floor.
+            cpu: CPUTransducerDecoder(sidecarFor: modelURL)
         )
 
         // Build the mel extractor with PLAN.md §5 defaults (16 kHz, 128 mels,

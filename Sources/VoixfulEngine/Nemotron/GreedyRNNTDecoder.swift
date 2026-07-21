@@ -82,9 +82,25 @@ public actor GreedyRNNTDecoder {
     /// by either a streaming chunked encoder loop (one `decode` call per chunk,
     /// no reset between chunks within the same utterance) or a one-shot
     /// non-streaming pass.
+    /// Optional CPU predict/join decoder (Accelerate). When present, the
+    /// whole greedy loop runs host-side — zero Core AI dispatches per step
+    /// (the ~0.4 ms/dispatch floor measured on this branch). Loaded from the
+    /// `<asset>.transducer.json/.bin` sidecar; its manifest carries joint.enc
+    /// so raw encoder steps are projected on CPU too.
+    let cpu: CPUTransducerDecoder?
+
     public init(prediction: PredictionSession, joiner: JoinerSession) {
         self.prediction = prediction
         self.joiner = joiner
+        self.cpu = nil
+        self.emittedTokens = []
+    }
+
+    /// Module-internal: `CPUTransducerDecoder` is not public API.
+    init(prediction: PredictionSession, joiner: JoinerSession, cpu: CPUTransducerDecoder?) {
+        self.prediction = prediction
+        self.joiner = joiner
+        self.cpu = cpu
         self.emittedTokens = []
     }
 
@@ -114,6 +130,25 @@ public actor GreedyRNNTDecoder {
         // Encoder output is `[1, T, d_model]`, so the time axis is `shape[1]`.
         let timeSteps = encoderOutput.shape[1]
         let dModel = encoderOutput.shape[2]
+
+        // CPU fast path: no NDArray scratch, no per-step Core AI dispatches.
+        if let cpu {
+            var newTokens: [Int32] = []
+            encoderOutput.view(as: Float.self).withUnsafePointer { src, _, strides in
+                for t in 0..<timeSteps {
+                    var symbolsThisStep = 0
+                    while symbolsThisStep < Self.maxSymbolsPerStep {
+                        let (token, _) = cpu.join(encRaw: src.advanced(by: t * strides[1]))
+                        if token == Self.blankId { break }
+                        newTokens.append(token)
+                        cpu.step(token: token)
+                        symbolsThisStep += 1
+                    }
+                }
+            }
+            emittedTokens.append(contentsOf: newTokens)
+            return newTokens
+        }
 
         // Resolves the Phase-E VERIFY on slicing. The SDK 27.0 API has no
         // zero-copy "give me a sub-NDArray pointing at time t" path that's
@@ -195,5 +230,8 @@ public actor GreedyRNNTDecoder {
     public func reset() async {
         emittedTokens.removeAll(keepingCapacity: true)
         await prediction.reset()
+        // CPU decoder state resets to zeros + the blank-as-SOS step, matching
+        // the engine's prediction-session seeding.
+        cpu?.reset()
     }
 }

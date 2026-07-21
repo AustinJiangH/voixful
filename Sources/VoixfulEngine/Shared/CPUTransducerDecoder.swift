@@ -28,7 +28,13 @@ final class CPUTransducerDecoder {
     private let wIH: [[Float]], wHH: [[Float]]       // per layer [2560 * 640]
     private let bIH: [[Float]], bHH: [[Float]]       // per layer [2560]
     private let predW: [Float], predB: [Float]       // [640*640], [640]
-    private let outW: [Float], outB: [Float]         // [8198*640], [8198]
+    private let outW: [Float], outB: [Float]         // [outDim*640], [outDim]
+    /// Optional raw-encoder projection (joint.enc). Present for Nemotron,
+    /// whose asset has no in-graph project_enc — the CPU decoder projects raw
+    /// [encIn] encoder steps itself.
+    private let encW: [Float]?, encB: [Float]?
+    let encIn: Int
+    private var eProj: [Float]
 
     // LSTM state + current projected prediction embedding.
     private var h: [[Float]], c: [[Float]]           // per layer [640]
@@ -76,6 +82,10 @@ final class CPUTransducerDecoder {
 
         let ph = (manifest["pred_hidden"] as? Int) ?? 640
         self.predHidden = ph
+        self.encW = tensors["joint.enc.weight"]
+        self.encB = tensors["joint.enc.bias"]
+        self.encIn = (manifest["enc_in"] as? Int) ?? ph
+        self.eProj = [Float](repeating: 0, count: ph)
         self.tokenLogits = (manifest["token_logits"] as? Int) ?? 8193
         self.blankId = Int32((manifest["blank_id"] as? Int) ?? 8192)
         self.durations = (manifest["durations"] as? [Int]) ?? [0, 1, 2, 3, 4]
@@ -169,12 +179,26 @@ final class CPUTransducerDecoder {
         var maxV: Float = 0
         var maxI: vDSP_Length = 0
         vDSP_maxvi(logits, 1, &maxV, &maxI, vDSP_Length(tokenLogits))
-        var durIdx = 0
-        var durV = -Float.greatestFiniteMagnitude
-        for j in 0..<durations.count where logits[tokenLogits + j] > durV {
-            durV = logits[tokenLogits + j]
-            durIdx = j
+        var skip = 0
+        if !durations.isEmpty {  // TDT duration head; plain RNN-T has none
+            var durIdx = 0
+            var durV = -Float.greatestFiniteMagnitude
+            for j in 0..<durations.count where logits[tokenLogits + j] > durV {
+                durV = logits[tokenLogits + j]
+                durIdx = j
+            }
+            skip = durations[durIdx]
         }
-        return (Int32(maxI), durations[durIdx])
+        return (Int32(maxI), skip)
+    }
+
+    /// Joint for one RAW encoder frame ([encIn] floats): projects through
+    /// joint.enc on CPU first (requires the sidecar to carry it — Nemotron).
+    func join(encRaw: UnsafePointer<Float>) -> (token: Int32, skip: Int) {
+        guard let encW, let encB else { return join(encProjT: encRaw) }
+        eProj = encB
+        cblas_sgemv(CblasRowMajor, CblasNoTrans, Int32(predHidden), Int32(encIn),
+                    1, encW, Int32(encIn), encRaw, 1, 1, &eProj, 1)
+        return eProj.withUnsafeBufferPointer { join(encProjT: $0.baseAddress!) }
     }
 }
