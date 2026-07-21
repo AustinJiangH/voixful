@@ -31,6 +31,10 @@ public actor ParakeetTDTEngine {
     private var loaded: [String: InferenceFunction] = [:]
     /// Function names present in the asset (fused-decode capability check).
     private let available: Set<String>
+    /// CPU predict/join decoder, present when the `<asset>.transducer.json/bin`
+    /// sidecar exists (see convert/parakeet-tdt dump_transducer.py). Bypasses
+    /// the ~0.4 ms/dispatch Core AI floor for the tiny decode-side math.
+    private let cpuDecoder: CPUTransducerDecoder?
     private let prediction: PredictionSession
     private let joiner: JoinerSession
     private let tokenizer: SentencePieceTokenizer
@@ -66,6 +70,8 @@ public actor ParakeetTDTEngine {
         guard names.contains("encode") else { throw ASRError.missingFunction("encode") }
         self.encodeWindows = encodeWindowNames(names)
         self.available = names
+        self.cpuDecoder = names.contains("project_enc")
+            ? CPUTransducerDecoder(sidecarFor: modelURL) : nil
         // Optional separate placement for predict/join (see ComputeUnit.swift).
         var decodeModel = model
         if let opts = decodeSpecializationOptions() {
@@ -182,7 +188,9 @@ public actor ParakeetTDTEngine {
         let tEnc = CFAbsoluteTimeGetCurrent()
 
         let emitted: [Int32]
-        if available.contains("project_enc"), available.contains("join_fused") {
+        if let cpu = cpuDecoder {
+            emitted = try await tdtDecodeCPU(cpu: cpu, encOut: encOut, realFrames: useT)
+        } else if available.contains("project_enc"), available.contains("join_fused") {
             emitted = try await tdtDecodeFused(encOut: encOut, realFrames: useT)
         } else {
             emitted = try await tdtDecode(encOut: encOut, realFrames: useT)
@@ -207,6 +215,52 @@ public actor ParakeetTDTEngine {
     private static let projT = 125
     /// Joint hidden width (project_encoder / project_prednet output).
     private static let jointHidden = 640
+
+    /// TDT greedy decode with predict/join fully on CPU (Accelerate): one
+    /// `project_enc` dispatch for the whole clip, one 320 KB readback, then
+    /// zero Core AI dispatches per step.
+    private func tdtDecodeCPU(
+        cpu: CPUTransducerDecoder, encOut: NDArray, realFrames: Int
+    ) async throws -> [Int32] {
+        let tOut = encOut.shape[1]
+        let frames = min(tOut, (realFrames + 7) / 8 + 1)
+
+        var encPad = NDArray(shape: [1, Self.projT, Self.dModel], scalarType: .float32)
+        var pv = encPad.mutableView(as: Float.self)
+        pv.withUnsafeMutablePointer { dst, _, _ in
+            dst.update(repeating: 0, count: Self.projT * Self.dModel)
+            encOut.view(as: Float.self).withUnsafePointer { src, _, _ in
+                dst.update(from: src, count: min(tOut, Self.projT) * Self.dModel)
+            }
+        }
+        var projOutputs = try await fn("project_enc").run(
+            inputs: ["enc_out": encPad],
+            states: InferenceFunction.MutableViews()
+        )
+        guard let encProj = projOutputs.remove("enc_proj")?.ndArray else {
+            throw ASRError.missingOutput("enc_proj")
+        }
+
+        cpu.reset()
+        var emitted: [Int32] = []
+        encProj.view(as: Float.self).withUnsafePointer { base, _, strides in
+            var t = 0
+            while t < frames {
+                var symbols = 0
+                while true {
+                    let (tok, skip) = cpu.join(encProjT: base.advanced(by: t * strides[1]))
+                    if tok != Self.blankId {
+                        emitted.append(tok)
+                        cpu.step(token: tok)
+                        symbols += 1
+                    }
+                    if skip > 0 { t += skip; break }
+                    if tok == Self.blankId || symbols >= Self.maxSymbolsPerStep { t += 1; break }
+                }
+            }
+        }
+        return emitted
+    }
 
     /// TDT greedy decode via the fused pair: `project_enc` once per clip,
     /// then `join_fused` per step — both argmaxes in-graph, so per-step host
