@@ -213,6 +213,31 @@ def main(argv: list[str] | None = None) -> int:
         output_names=["logits"],
     )
 
+    # Baked audio->mel preprocessor (batch path). NeMo's own preprocessor
+    # doesn't survive torch.export; preproc_matmul re-expresses it with fixed
+    # shapes + matmuls, parity-tested against the NeMo featurizer (7e-5).
+    # Its presence flips the CLI/engine into the pipelined batch mode
+    # (encode(N+1) overlapped with decode(N)).
+    from .preproc_matmul import AUDIO_SAMPLES, NemotronPreprocessorForCoreAI
+
+    featurizer = modules["preprocessor"].featurizer
+    featurizer.dither = 0.0
+    preproc_wrapper = NemotronPreprocessorForCoreAI(featurizer).eval()
+    print("Exporting preprocess_audio (matmul mel, 20832 samples -> [1,128,128]) ...")
+    exported_preproc = torch.export.export(
+        preproc_wrapper,
+        args=(
+            torch.zeros(1, AUDIO_SAMPLES, dtype=torch.float32),
+            torch.tensor([AUDIO_SAMPLES], dtype=torch.int32),
+        ),
+    ).run_decompositions(coreai_torch.get_decomp_table())
+    converter.add_exported_program(
+        exported_preproc,
+        entrypoint_name="preprocess_audio",
+        input_names=["audio", "audio_length"],
+        output_names=["mel"],
+    )
+
     # VERIFY: add_exported_program kwargs — PLAN.md §3 Step 4 snippet does not show a
     # `entrypoint_name=` keyword explicitly. The WWDC 2026 "Dive into Core AI" session
     # demonstrated multi-function .aimodel packing; confirm the exact keyword name

@@ -56,6 +56,13 @@ public actor NemotronStreamingEngine {
 
     private let preprocess: PreprocessSession?
     private let encoder: EncoderSession
+    /// The multi-function model handle, retained so the batch path can lazily
+    /// open the canonical 128-frame window when the streaming window differs.
+    private let model: AIModel
+    /// Lazily-created canonical-window session for `transcribe(audio:)` —
+    /// `preprocess_audio` emits fixed [1,128,128] mels, so batch always runs
+    /// the 128-frame `encode` regardless of the streaming `ChunkSize`.
+    private var batchEncoder: EncoderSession?
     private let prediction: PredictionSession
     private let joiner: JoinerSession
     private let decoder: GreedyRNNTDecoder
@@ -198,6 +205,7 @@ public actor NemotronStreamingEngine {
         let picked = windows.first { $0.frames >= wantMelFrames } ?? (frames: 128, name: "encode")
         self.encoderFramesPerChunk = picked.frames
         self.encoder = try await EncoderSession(model: model, functionName: picked.name)
+        self.model = model
 
         // VOIXFUL_COMPUTE_DECODE: place the tiny predict/join functions on a
         // different compute unit than the encoder via a second AIModel
@@ -527,7 +535,20 @@ public actor NemotronStreamingEngine {
         let chunkSamples = PreprocessSession.chunkSamples          // 20320
         let leftContext = PreprocessSession.leftContextSamples     // 512
         let inputSamples = PreprocessSession.audioSamples          // 20832
-        let framesPerChunk = encoderFramesPerChunk
+        // Batch is pinned to the canonical 128-frame window: preprocess_audio
+        // emits fixed [1,128,128] mels. If streaming picked a smaller window,
+        // lazily open (and reset) a dedicated canonical-window session.
+        let framesPerChunk = 128
+        let encoder: EncoderSession
+        if encoderFramesPerChunk == 128 {
+            encoder = self.encoder
+        } else {
+            if batchEncoder == nil {
+                batchEncoder = try await EncoderSession(model: model, functionName: "encode")
+            }
+            await batchEncoder!.reset()
+            encoder = batchEncoder!
+        }
 
         // Prepend a chunk of silence to warm the encoder's cache. Costs ~30 ms
         // (one extra chunk of preprocess + encoder + decoder); recovers the
