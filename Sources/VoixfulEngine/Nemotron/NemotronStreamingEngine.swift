@@ -188,8 +188,23 @@ public actor NemotronStreamingEngine {
         // still run streaming.
         self.preprocess = try? await PreprocessSession(model: model)
         self.encoder = try await EncoderSession(model: model)
-        self.prediction = try await PredictionSession(model: model)
-        self.joiner = try await JoinerSession(model: model)
+
+        // VOIXFUL_COMPUTE_DECODE: place the tiny predict/join functions on a
+        // different compute unit than the encoder via a second AIModel
+        // instance (plain init — per-function specialization at loadFunction,
+        // so the palettized encoder is never lowered for the pinned unit;
+        // whole-asset specialize with a CPU pin fails on palette4 assets).
+        var decodeModel = model
+        if let opts = decodeSpecializationOptions() {
+            do {
+                decodeModel = try await AIModel(contentsOf: modelURL, options: opts)
+            } catch {
+                throw ASRError.modelLoadFailed(
+                    "decode-model AIModel(contentsOf:) with VOIXFUL_COMPUTE_DECODE failed: \(error)")
+            }
+        }
+        self.prediction = try await PredictionSession(model: decodeModel)
+        self.joiner = try await JoinerSession(model: decodeModel)
 
         // Build the greedy RNN-T decoder. Holds references to prediction and
         // joiner sessions; does NOT hold the encoder (encoder outputs are

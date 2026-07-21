@@ -63,8 +63,18 @@ public actor ParakeetTDTEngine {
         let names = try ModelBackend.assetFunctions(modelURL: modelURL).names
         guard names.contains("encode") else { throw ASRError.missingFunction("encode") }
         self.encodeWindows = encodeWindowNames(names)
-        self.prediction = try await PredictionSession(model: model)
-        self.joiner = try await JoinerSession(model: model)
+        // Optional separate placement for predict/join (see ComputeUnit.swift).
+        var decodeModel = model
+        if let opts = decodeSpecializationOptions() {
+            do {
+                decodeModel = try await AIModel(contentsOf: modelURL, options: opts)
+            } catch {
+                throw ASRError.modelLoadFailed(
+                    "decode-model AIModel(contentsOf:) with VOIXFUL_COMPUTE_DECODE failed: \(error)")
+            }
+        }
+        self.prediction = try await PredictionSession(model: decodeModel)
+        self.joiner = try await JoinerSession(model: decodeModel)
         let tokenizer = try SentencePieceTokenizer(piecesURL: piecesURL)
         let pieceCount = tokenizer.count
         guard pieceCount == Self.vocab else {
