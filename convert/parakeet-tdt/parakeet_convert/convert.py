@@ -12,7 +12,13 @@ from pathlib import Path
 import coreai_torch
 import torch
 
-from .export import export_encoder, export_joiner, export_prediction
+from .export import (
+    export_enc_projector,
+    export_encoder,
+    export_join_fused,
+    export_joiner,
+    export_prediction,
+)
 from .extract import extract_modules_from_nemo
 from .models import (
     ParakeetEncoderForCoreAI,
@@ -132,6 +138,27 @@ def main(argv: list[str] | None = None) -> int:
         entrypoint_name=JOIN_FN,
         input_names=["enc_step", "pred_emb"],
         output_names=["logits"],  # [B, T, U, vocab+1+num_durations]
+    )
+
+    # Fused decode pair: project the whole clip's enc_out once, then a join
+    # whose two argmaxes run in-graph — per-step host I/O drops from a
+    # [1,1,1,8198] logits readback to two int32 scalars.
+    from .models import ParakeetEncProjectorForCoreAI, ParakeetJoinFusedForCoreAI
+
+    projector_wrapper = ParakeetEncProjectorForCoreAI(modules["joiner"]).eval()
+    fused_wrapper = ParakeetJoinFusedForCoreAI(modules["joiner"]).eval()
+    print("Exporting project_enc (T=125) + join_fused ...")
+    converter.add_exported_program(
+        export_enc_projector(projector_wrapper),
+        entrypoint_name="project_enc",
+        input_names=["enc_out"],
+        output_names=["enc_proj"],
+    )
+    converter.add_exported_program(
+        export_join_fused(fused_wrapper),
+        entrypoint_name="join_fused",
+        input_names=["enc_proj_t", "pred_emb"],
+        output_names=["token", "duration"],
     )
 
     ai_program = converter.to_coreai()

@@ -76,3 +76,50 @@ class ParakeetJoinerForCoreAI(nn.Module):
         # joint(f, g) -> [B, T, U, vocab+1+num_durations]. The TDT joint already
         # concatenates the duration logits; the Swift decoder splits them.
         return self.inner.joint(enc_step, pred_emb)
+
+
+class ParakeetEncProjectorForCoreAI(nn.Module):
+    """`joint.project_encoder` over the whole clip ONCE (`project_enc`).
+
+    The plain `join` recomputes enc_proj(f_t) inside every call although f_t is
+    fixed after encode — roughly half the per-step joint FLOPs. Traced at the
+    ladder's LARGEST T_out (125 enc frames); the host zero-pads shorter clips'
+    enc_out and slices the projection back down.
+    """
+
+    def __init__(self, nemo_joiner: nn.Module) -> None:
+        super().__init__()
+        self.inner = nemo_joiner
+
+    def forward(self, enc_out: torch.Tensor) -> torch.Tensor:  # [1, 125, 1024]
+        return self.inner.project_encoder(enc_out)             # [1, 125, 640]
+
+
+class ParakeetJoinFusedForCoreAI(nn.Module):
+    """Pre-projected join + BOTH argmaxes in-graph (`join_fused`).
+
+    (enc_proj_t [1,1,640], pred_emb [1,1,640]) -> (token [1] i32, dur [1] i32).
+    Replaces the [1,1,1,8198] logits readback + host argmax with two scalars;
+    NeMo equivalence: joint(f,g) == joint_after_projection(project_encoder(f),
+    project_prednet(g)).
+    """
+
+    def __init__(
+        self,
+        nemo_joiner: nn.Module,
+        token_logits: int = 8193,
+        durations: tuple[int, ...] = (0, 1, 2, 3, 4),
+    ) -> None:
+        super().__init__()
+        self.inner = nemo_joiner
+        self.token_logits = token_logits
+        self.register_buffer("dur_values", torch.tensor(durations, dtype=torch.int32))
+
+    def forward(self, enc_proj_t: torch.Tensor, pred_emb: torch.Tensor):
+        g = self.inner.project_prednet(pred_emb)
+        logits = self.inner.joint_after_projection(enc_proj_t, g)  # [1,1,1,8198]
+        flat = logits.reshape(-1)
+        tok = torch.argmax(flat[: self.token_logits]).to(torch.int32).reshape(1)
+        dur_idx = torch.argmax(flat[self.token_logits :]).reshape(1)
+        dur = self.dur_values[dur_idx].reshape(1)
+        return tok, dur

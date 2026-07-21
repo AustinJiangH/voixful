@@ -29,6 +29,8 @@ public actor ParakeetTDTEngine {
     private let encodeWindows: [(frames: Int, name: String)]
     /// Lazily loaded encode functions, keyed by name.
     private var loaded: [String: InferenceFunction] = [:]
+    /// Function names present in the asset (fused-decode capability check).
+    private let available: Set<String>
     private let prediction: PredictionSession
     private let joiner: JoinerSession
     private let tokenizer: SentencePieceTokenizer
@@ -63,6 +65,7 @@ public actor ParakeetTDTEngine {
         let names = try ModelBackend.assetFunctions(modelURL: modelURL).names
         guard names.contains("encode") else { throw ASRError.missingFunction("encode") }
         self.encodeWindows = encodeWindowNames(names)
+        self.available = names
         // Optional separate placement for predict/join (see ComputeUnit.swift).
         var decodeModel = model
         if let opts = decodeSpecializationOptions() {
@@ -178,7 +181,12 @@ public actor ParakeetTDTEngine {
         }
         let tEnc = CFAbsoluteTimeGetCurrent()
 
-        let emitted = try await tdtDecode(encOut: encOut, realFrames: useT)
+        let emitted: [Int32]
+        if available.contains("project_enc"), available.contains("join_fused") {
+            emitted = try await tdtDecodeFused(encOut: encOut, realFrames: useT)
+        } else {
+            emitted = try await tdtDecode(encOut: encOut, realFrames: useT)
+        }
         if Self.traceDecode {
             let tDec = CFAbsoluteTimeGetCurrent()
             let line = String(
@@ -192,6 +200,88 @@ public actor ParakeetTDTEngine {
         // (segments) is not surfaced yet, and language is model-auto-detected.
         return Transcript(text: tokenizer.decode(emitted, stripLangTags: true),
                           segments: [], language: nil)
+    }
+
+    /// Fixed T the `project_enc` program was traced at (largest window's
+    /// encoder output length: 1000 mel frames / 8).
+    private static let projT = 125
+    /// Joint hidden width (project_encoder / project_prednet output).
+    private static let jointHidden = 640
+
+    /// TDT greedy decode via the fused pair: `project_enc` once per clip,
+    /// then `join_fused` per step — both argmaxes in-graph, so per-step host
+    /// I/O is 640 floats in and two int32 scalars out instead of a
+    /// [1,1,1,8198] logits readback + host argmax.
+    private func tdtDecodeFused(encOut: NDArray, realFrames: Int) async throws -> [Int32] {
+        let tOut = encOut.shape[1]
+        let frames = min(tOut, (realFrames + 7) / 8 + 1)
+
+        // Zero-pad enc_out to the projector's fixed [1, 125, 1024] frame.
+        var encPad = NDArray(shape: [1, Self.projT, Self.dModel], scalarType: .float32)
+        var pv = encPad.mutableView(as: Float.self)
+        pv.withUnsafeMutablePointer { dst, _, _ in
+            dst.update(repeating: 0, count: Self.projT * Self.dModel)
+            encOut.view(as: Float.self).withUnsafePointer { src, _, _ in
+                dst.update(from: src, count: min(tOut, Self.projT) * Self.dModel)
+            }
+        }
+        var projOutputs = try await fn("project_enc").run(
+            inputs: ["enc_out": encPad],
+            states: InferenceFunction.MutableViews()
+        )
+        guard let encProj = projOutputs.remove("enc_proj")?.ndArray else {
+            throw ASRError.missingOutput("enc_proj")
+        }
+
+        let joinFused = try await fn("join_fused")
+        var encProjT = NDArray(shape: [1, 1, Self.jointHidden], scalarType: .float32)
+        var emitted: [Int32] = []
+
+        var t = 0
+        while t < frames {
+            encProj.view(as: Float.self).withUnsafePointer { src, _, strides in
+                let off = t * strides[1]
+                var dv = encProjT.mutableView(as: Float.self)
+                dv.withUnsafeMutablePointer { dst, _, _ in
+                    dst.update(from: src.advanced(by: off), count: Self.jointHidden)
+                }
+            }
+
+            var symbols = 0
+            while true {
+                let predEmb = await prediction.currentEmbedding()
+                var outs = try await joinFused.run(
+                    inputs: ["enc_proj_t": encProjT, "pred_emb": predEmb],
+                    states: InferenceFunction.MutableViews()
+                )
+                guard let tokND = outs.remove("token")?.ndArray,
+                      let durND = outs.remove("duration")?.ndArray else {
+                    throw ASRError.missingOutput("join_fused token/duration")
+                }
+                var tok: Int32 = 0
+                var skip = 0
+                tokND.view(as: Int32.self).withUnsafePointer { p, _, _ in tok = p[0] }
+                durND.view(as: Int32.self).withUnsafePointer { p, _, _ in skip = Int(p[0]) }
+
+                if tok != Self.blankId {
+                    emitted.append(tok)
+                    try await prediction.step(token: tok)
+                    symbols += 1
+                }
+                if Self.traceDecode {
+                    FileHandle.standardError.write(Data("[tdt/fused] t=\(t) tok=\(tok) skip=\(skip)\n".utf8))
+                }
+                if skip > 0 {
+                    t += skip
+                    break
+                }
+                if tok == Self.blankId || symbols >= Self.maxSymbolsPerStep {
+                    t += 1
+                    break
+                }
+            }
+        }
+        return emitted
     }
 
     /// TDT greedy decode over the encoder time axis.
