@@ -40,8 +40,13 @@ extension ModelBackend {
 
     /// The single backend-classification rule, over already-read functions. Both
     /// `detect` and the CLI go through this so the heuristic lives in one place.
+    /// Cohere is any AED decode entrypoint: lean assets ship only the cached
+    /// decoders (decode_x4/decode_step_fused); `decode_step` is the legacy
+    /// stateless program, exported only under `--legacy-decoders`.
     public static func classify(_ fns: AssetFunctions) -> ModelBackend {
-        if fns.names.contains("decode_step") { return .cohere }
+        if !fns.names.isDisjoint(with: ["decode_x4", "decode_step_fused", "decode_step_cached", "decode_step"]) {
+            return .cohere
+        }
         if fns.encodeHasStates { return .nemotron }   // cache-aware streaming encoder
         return .parakeet
     }

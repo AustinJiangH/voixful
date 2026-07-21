@@ -67,7 +67,13 @@ public actor CohereTranscribeEngine {
         self.model = model
         let names = try ModelBackend.assetFunctions(modelURL: modelURL).names
         guard names.contains("encode") else { throw ASRError.missingFunction("encode") }
-        guard names.contains("decode_step") else { throw ASRError.missingFunction("decode_step") }
+        // Any one decode entrypoint suffices; lean assets ship only the cached
+        // decoders (decode_x4 / decode_step_fused) — the stateless decode_step
+        // is a --legacy-decoders export.
+        let decodeFns: Set<String> = ["decode_x4", "decode_step_fused", "decode_step_cached", "decode_step"]
+        guard !names.isDisjoint(with: decodeFns) else {
+            throw ASRError.missingFunction("decode_x4|decode_step_fused|decode_step_cached|decode_step")
+        }
         self.available = names
         self.encodeWindows = encodeWindowNames(names)
         let tokenizer = try SentencePieceTokenizer(piecesURL: piecesURL)
@@ -110,10 +116,12 @@ public actor CohereTranscribeEngine {
         // frames. Pick the smallest exported window that fits the clip so short
         // clips don't pay the full 35 s / 48-layer encode on zero padding.
         let melFlat = await melExtractor.extract(samples: audio)  // [128 × T]
+        let tExtract = CFAbsoluteTimeGetCurrent()
         let realT = melFlat.count / Self.nMels
         let picked = pickEncodeWindow(encodeWindows, realFrames: realT)
         let window = picked?.frames ?? Self.melFrames
         let encode = try fn(picked?.name ?? "encode")
+        let tLoad = CFAbsoluteTimeGetCurrent()
         let useT = min(realT, window)
         let normFlat = perFeatureNormalize(melFlat, nMels: Self.nMels, frames: realT)
 
@@ -176,13 +184,15 @@ public actor CohereTranscribeEngine {
             let tDec = CFAbsoluteTimeGetCurrent()
             let steps = emitted.count + 1
             let audioS: Double = Double(audio.count) / 16_000
-            let melMS: Double = (tMel - t0) * 1000
+            let melMS: Double = (tExtract - t0) * 1000
+            let loadMS: Double = (tLoad - tExtract) * 1000
+            let packMS: Double = (tMel - tLoad) * 1000
             let encMS: Double = (tEnc - tMel) * 1000
             let decMS: Double = (tDec - tEnc) * 1000
             let line = String(
                 format: "[cohere/timing] audio=%.1fs realT=%d useT=%d (window=%d) | "
-                    + "mel=%.0fms encode=%.0fms decode=%.0fms (%d steps, %.1fms/step)\n",
-                audioS, realT, useT, window, melMS, encMS, decMS, steps,
+                    + "mel=%.0fms load=%.0fms pack=%.0fms encode=%.0fms decode=%.0fms (%d steps, %.1fms/step)\n",
+                audioS, realT, useT, window, melMS, loadMS, packMS, encMS, decMS, steps,
                 decMS / Double(steps))
             FileHandle.standardError.write(Data(line.utf8))
         }
