@@ -44,14 +44,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output", default=DEFAULT_OUTPUT)
     parser.add_argument(
         "--windows",
-        default="32,128,256",
+        default="32,72,128,256",
         help=(
             "Comma-separated encoder chunk lengths in mel frames (10 ms hop), "
             "each exported as its own fixed-shape program against the SHARED "
             "streaming caches. 128 is required (the canonical 'encode' — "
             "runtime back-compat contract); others become 'encode_<frames>'. "
-            "32 == the 320 ms low-latency streaming cadence; 256 == the "
-            "batch-throughput chunk."
+            "Small windows are traced under their matching TRAINED att-context "
+            "tier (32 -> [70,1] the 160 ms tier; 72 -> [70,6] the 560 ms "
+            "tier); tracing a small chunk under the default [70,13] config "
+            "produces garbage (valid_out_len bookkeeping assumes 112-mel "
+            "chunks — measured WER collapse). 256 == batch-throughput chunk."
         ),
     )
     parser.add_argument(
@@ -166,9 +169,18 @@ def main(argv: list[str] | None = None) -> int:
     # Step (d): pack into one multi-function .aimodel per PLAN.md §3 Step 4.
     converter = coreai_torch.TorchConverter()
 
+    # Per-window attention context: small windows use the checkpoint's TRAINED
+    # tier whose chunk (+9-frame pre-encode cache) fits the window; >=128-mel
+    # windows keep the checkpoint default [70, 13] (the 1120 ms tier). The
+    # streaming caches are left-context-shaped (70) so all tiers share state.
+    att_by_window = {32: [70, 1], 72: [70, 6]}
+    default_att = list(encoder_wrapper.inner.att_context_size)
     for w in windows:
         name = ENCODE_FN if w == 128 else f"{ENCODE_FN}_{w}"
-        print(f"Exporting encoder chunk window {w} frames -> function '{name}' ...")
+        att = att_by_window.get(w, default_att)
+        encoder_wrapper.inner.set_default_att_context_size(att)
+        encoder_wrapper.inner.setup_streaming_params()
+        print(f"Exporting encoder chunk window {w} frames (att_context={att}) -> function '{name}' ...")
         converter.add_exported_program(
             export_encoder(encoder_wrapper, chunk_frames=w),
             entrypoint_name=name,
