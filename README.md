@@ -63,6 +63,37 @@ The encoder can be compressed via `convert.py --quantize`. Measured on M5 Pro
 (just-in-time decompression), so it cuts **disk + RAM + latency**, not just disk.
 Linear INT8 cuts disk only. See `convert/README.md` for the recipe and `MODEL_CARD.md`.
 
+## Performance knobs & measured baselines
+
+Assets must be exported with **coreai-torch ≥ 0.4.1** — 0.4.0-era exports fail
+to load from macOS 27 beta 3 on ("Failed to convert to versioned IR").
+
+Warm per-utterance numbers, M5 Pro, 5.5 s clip, palette4 assets:
+
+| Backend | Wall (session-style) | Stage split | Notes |
+|---|---|---|---|
+| Nemotron (streaming) | ~0.20 s | mel 1 / encode 138 / decode 58 ms | partials every 0.72 s with `--chunk 560` (was 1.28 s) |
+| Nemotron (batch) | ~0.28 s | mel 6 / encode 164 / decode 113 ms | better transcripts (full-context mel); needs `preprocess_audio` in the asset |
+| Parakeet (full-context) | ~0.10 s | mel 2 / encode 58 / decode 38 ms | fused `join_fused` path on new assets |
+| Cohere 2B (AED) | ~0.29 s | mel 1 / encode 127 / decode 160 ms | + ~1.1 s one-time encoder window load, hidden by `prepare()` prewarm in session use |
+
+- **Multi-window encoders** (all three backends): the runtime picks the smallest
+  exported `encode_<frames>` that fits the clip (Cohere ladder 220–3500, Parakeet
+  125–1000, Nemotron chunk tiers 32/72/128/256 — small Nemotron windows are traced
+  under their trained att-context tier).
+- **Prewarm**: `prepare()` background-loads likely inference functions so weight
+  materialization overlaps audio capture (`VOIXFUL_PREWARM=0` disables;
+  `VOIXFUL_SETTLE_MS=<ms>` emulates capture idle for CLI benchmarking).
+- **Tracing**: `NEMOTRON_TRACE=1` / `PARAKEET_TRACE=1` / `COHERE_TRACE=1` print
+  per-utterance stage breakdowns to stderr.
+- **Placement**: `VOIXFUL_COMPUTE=gpu|ane|cpu` pins whole-model specialization;
+  `VOIXFUL_COMPUTE_DECODE=...` pins the decode-side second instance;
+  `VOIXFUL_COHERE_DECODER_ASSET=<path>` sources Cohere decoder functions from the
+  decoder-only companion asset. Measured caveat: on M5-class silicon the
+  autoregressive decode floor (~4.6 ms/step Cohere, ~0.5 ms/dispatch transducer)
+  is **placement-, kernel-count-, weight-bandwidth-, and payload-invariant** —
+  default auto-partition is already optimal; don't chase pins without new evidence.
+
 ## Repo layout
 
 ```
