@@ -85,8 +85,19 @@ def main(argv: list[str] | None = None) -> int:
         help="Encoder compression (>90%% of params): palette4 = the RAM win.",
     )
     parser.add_argument(
+        "--legacy-decoders",
+        action="store_true",
+        help=(
+            "Also export the superseded decode_step / decode_step_cached "
+            "programs. The runtime's preference chain (decode_x4 -> "
+            "decode_step_fused -> decode_step_cached -> decode_step) never "
+            "reaches them when decode_x4 ships, so they are dead weight in "
+            "the asset by default."
+        ),
+    )
+    parser.add_argument(
         "--windows",
-        default="440,875,1750,3500",
+        default="220,440,660,875,1300,1750,2600,3500",
         help=(
             "Comma-separated encoder mel-frame windows. The traced encoder always "
             "runs its full window, so a short clip in the 35 s window burns 48-layer "
@@ -111,7 +122,6 @@ def main(argv: list[str] | None = None) -> int:
     model = load_cohere(args.model_id)
 
     encoder_wrapper = CohereEncoderForCoreAI(model.encoder, model.encoder_decoder_proj).eval()
-    decoder_wrapper = CohereDecoderStepForCoreAI(model, max_cache_len=CACHE_LEN).eval()
 
     t_enc = trace_t_enc(encoder_wrapper)
     print(f"Encoder output time length T_enc = {t_enc} (from mel {N_MELS}x{MEL_FRAMES})")
@@ -130,20 +140,24 @@ def main(argv: list[str] | None = None) -> int:
         encoder_wrapper = quantize_encoder(encoder_wrapper)
         print(f"Applied {args.quantize} compression to the encoder.")
 
-    print("Exporting decoder_step ...")
-    exported_decoder = export_decoder(decoder_wrapper, t_enc)
+    exported_decoder = None
+    exported_cached_decoder = None
+    if args.legacy_decoders:
+        decoder_wrapper = CohereDecoderStepForCoreAI(model, max_cache_len=CACHE_LEN).eval()
+        print("Exporting decoder_step ...")
+        exported_decoder = export_decoder(decoder_wrapper, t_enc)
+        cached_decoder_wrapper = CohereDecoderStepCachedForCoreAI(
+            model, max_cache_len=CACHE_LEN
+        ).eval()
+        print("Exporting decode_step_cached ...")
+        exported_cached_decoder = export_cached_decoder(cached_decoder_wrapper, t_enc)
 
-    # Cached-decoder pair: cross-K/V projected once per utterance into state
-    # buffers; the per-step decoder reads them (and mutates the self-attention
-    # cache) via zero-copy states instead of threading ~14 MB/token of tensors.
+    # Cached-decoder projector: cross-K/V projected once per utterance; the
+    # per-step decoders read them (and mutate the self-attention cache) via
+    # zero-copy states instead of threading ~14 MB/token of tensors.
     projector_wrapper = CohereCrossKVProjectorForCoreAI(model).eval()
-    cached_decoder_wrapper = CohereDecoderStepCachedForCoreAI(
-        model, max_cache_len=CACHE_LEN
-    ).eval()
     print("Exporting project_cross_kv ...")
     exported_projector = export_cross_kv_projector(projector_wrapper, t_enc)
-    print("Exporting decode_step_cached ...")
-    exported_cached_decoder = export_cached_decoder(cached_decoder_wrapper, t_enc)
     fused_decoder_wrapper = CohereDecoderStepFusedForCoreAI(
         model, t_enc=t_enc, max_cache_len=CACHE_LEN
     ).eval()
@@ -168,32 +182,34 @@ def main(argv: list[str] | None = None) -> int:
             input_names=["input_features", "length"],
             output_names=["encoder_hidden_states"],
         )
-    converter.add_exported_program(
-        exported_decoder,
-        entrypoint_name=DECODE_FN,
-        input_names=[
-            "input_id", "position_id", "encoder_hidden_states",
-            "self_attention_mask", "cross_attention_mask", "k_cache", "v_cache",
-        ],
-        output_names=["logits", "k_cache_out", "v_cache_out"],
-    )
+    if exported_decoder is not None:
+        converter.add_exported_program(
+            exported_decoder,
+            entrypoint_name=DECODE_FN,
+            input_names=[
+                "input_id", "position_id", "encoder_hidden_states",
+                "self_attention_mask", "cross_attention_mask", "k_cache", "v_cache",
+            ],
+            output_names=["logits", "k_cache_out", "v_cache_out"],
+        )
     converter.add_exported_program(
         exported_projector,
         entrypoint_name="project_cross_kv",
         input_names=["encoder_hidden_states"],
         output_names=["cross_k", "cross_v"],
     )
-    converter.add_exported_program(
-        exported_cached_decoder,
-        entrypoint_name="decode_step_cached",
-        input_names=[
-            "input_id", "position_id",
-            "self_attention_mask", "cross_attention_mask",
-            "cross_k", "cross_v",
-        ],
-        state_names=["k_cache", "v_cache"],
-        output_names=["logits"],
-    )
+    if exported_cached_decoder is not None:
+        converter.add_exported_program(
+            exported_cached_decoder,
+            entrypoint_name="decode_step_cached",
+            input_names=[
+                "input_id", "position_id",
+                "self_attention_mask", "cross_attention_mask",
+                "cross_k", "cross_v",
+            ],
+            state_names=["k_cache", "v_cache"],
+            output_names=["logits"],
+        )
     converter.add_exported_program(
         exported_fused_decoder,
         entrypoint_name="decode_step_fused",

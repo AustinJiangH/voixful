@@ -16,6 +16,7 @@ func specializationOptions() -> SpecializationOptions {
     case "gpu": return SpecializationOptions(preferredComputeUnitKind: .gpu)
     case "ane", "neuralengine", "neural-engine":
         return SpecializationOptions(preferredComputeUnitKind: .neuralEngine)
+    case "cpu": return SpecializationOptions(preferredComputeUnitKind: .cpu)
     default: return .default
     }
 }

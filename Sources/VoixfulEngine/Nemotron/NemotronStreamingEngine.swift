@@ -281,6 +281,10 @@ public actor NemotronStreamingEngine {
         // Stamp the session start. Used as the reference t=0 for
         // PartialHypothesis.timestamp.
         sessionStartTime = CFAbsoluteTimeGetCurrent()
+
+        // Fresh per-utterance perf ledger (streaming path accumulates into it
+        // across feed() calls; printed at finish() under NEMOTRON_TRACE).
+        lastPerf = PerfCounters()
     }
 
     // MARK: - feed
@@ -321,7 +325,9 @@ public actor NemotronStreamingEngine {
         // the mel extractor and clear it.
         let newAudio = audioBuffer
         audioBuffer.removeAll(keepingCapacity: true)
+        lastPerf.audioMs += Double(samples.count) / 16.0  // ms at 16 kHz
 
+        let melStart = Date()
         if let newMelFrames = await melExtractor.extractStreaming(samples: newAudio) {
             // newMelFrames is row-major [nMels × T_new] flattened. Number of
             // frames = total elements / nMels.
@@ -352,6 +358,8 @@ public actor NemotronStreamingEngine {
             }
         }
 
+        lastPerf.preprocessMs += Date().timeIntervalSince(melStart) * 1000
+
         // Now consume as many chunks as we have. Each chunk needs
         // `chunkSize.totalFrames` mel frames.
         let framesPerChunk = Self.encoderFramesPerChunk
@@ -376,11 +384,16 @@ public actor NemotronStreamingEngine {
             // would also take a `lang_id` here.
             var melLength = NDArray(shape: [1], scalarType: .int32)
             melLength.setInt32(at: 0, to: Int32(framesPerChunk))
+            let encStart = Date()
             let encOut = try await encoder.forward(mel: chunkMel, melLength: melLength)
+            lastPerf.encodeMs += Date().timeIntervalSince(encStart) * 1000
 
             // Drive the greedy decoder over the encoder output's time axis.
             // Returns just the tokens emitted by THIS decode call.
+            let decStart = Date()
             let newTokens = try await decoder.decode(encoderOutput: encOut)
+            lastPerf.decodeMs += Date().timeIntervalSince(decStart) * 1000
+            lastPerf.chunkCount += 1
 
             // Track the utterance-wide accumulator for the final transcript.
             allEmittedTokens.append(contentsOf: newTokens)
@@ -398,7 +411,9 @@ public actor NemotronStreamingEngine {
             // cumulative. If the consumer expects incremental, change this
             // to `tokenizer.decode(tokens: newTokens, ...)` and update
             // Types.swift in lockstep.
+            let detokStart = Date()
             let text = await tokenizer.decode(tokens: allEmittedTokens, stripLangTags: true)
+            lastPerf.detokMs += Date().timeIntervalSince(detokStart) * 1000
 
             // Stable-until-token: the right context for THIS chunk is
             // `chunkSize.attContextRight` frames; the tokens emitted at the
@@ -456,10 +471,28 @@ public actor NemotronStreamingEngine {
         public var encodeMs: Double = 0
         public var decodeMs: Double = 0
         public var copyMs: Double = 0
+        public var detokMs: Double = 0
         public var chunkCount: Int = 0
         public var audioMs: Double = 0
     }
     public private(set) var lastPerf = PerfCounters()
+
+    /// `NEMOTRON_TRACE=1` prints a per-utterance stage breakdown to stderr,
+    /// mirroring `COHERE_TRACE` / `PARAKEET_TRACE`. Covers both the streaming
+    /// path (accumulated across `feed()` calls, printed at `finish()`) and the
+    /// batch `transcribe(audio:)` path.
+    private static let trace = ProcessInfo.processInfo.environment["NEMOTRON_TRACE"] != nil
+
+    private func printPerfTrace(path: String) {
+        guard Self.trace else { return }
+        let p = lastPerf
+        let line = String(
+            format: "[nemotron/timing] %@ audio=%.1fs | mel=%.0fms encode=%.0fms "
+                + "decode=%.0fms detok=%.0fms copy=%.0fms (%d chunks)\n",
+            path, p.audioMs / 1000, p.preprocessMs, p.encodeMs,
+            p.decodeMs, p.detokMs, p.copyMs, p.chunkCount)
+        FileHandle.standardError.write(Data(line.utf8))
+    }
 
     public func transcribe(audio: [Float], warmup: Bool = true) async throws -> Transcript {
         await self.start()
@@ -589,7 +622,10 @@ public actor NemotronStreamingEngine {
         }
 
         lastPerf = perf
+        let detokStart = Date()
         let fullText = await tokenizer.decode(tokens: allEmittedTokens, stripLangTags: true)
+        lastPerf.detokMs += Date().timeIntervalSince(detokStart) * 1000
+        printPerfTrace(path: "batch")
         let segment = Transcript.Segment(
             text: fullText,
             startTime: 0,
@@ -637,8 +673,13 @@ public actor NemotronStreamingEngine {
             // would also take a `lang_id` here.
             var melLength = NDArray(shape: [1], scalarType: .int32)
             melLength.setInt32(at: 0, to: Int32(framesPerChunk))
+            let encStart = Date()
             let encOut = try await encoder.forward(mel: chunkMel, melLength: melLength)
+            lastPerf.encodeMs += Date().timeIntervalSince(encStart) * 1000
+            let decStart = Date()
             let newTokens = try await decoder.decode(encoderOutput: encOut)
+            lastPerf.decodeMs += Date().timeIntervalSince(decStart) * 1000
+            lastPerf.chunkCount += 1
             allEmittedTokens.append(contentsOf: newTokens)
         }
 
@@ -646,7 +687,10 @@ public actor NemotronStreamingEngine {
         // the final transcript since callers requesting `finish()` expect
         // the clean text; the language is surfaced separately in
         // `Transcript.language`.
+        let detokStart = Date()
         let fullText = await tokenizer.decode(tokens: allEmittedTokens, stripLangTags: true)
+        lastPerf.detokMs += Date().timeIntervalSince(detokStart) * 1000
+        printPerfTrace(path: "stream")
 
         // Build a single placeholder segment spanning [0, now]. Per-token
         // time-aligned segments are a Phase F follow-up — the public shape
