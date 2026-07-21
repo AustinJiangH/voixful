@@ -19,22 +19,27 @@ import Foundation
 public actor PreprocessSession {
     let function: InferenceFunction
 
-    /// Total input samples per call.
-    public static let audioSamples: Int = 20832
-
     /// Left-context samples at the start of the input (filled with previous
     /// chunk's tail or zeros for chunk 0).
     public static let leftContextSamples: Int = 512
 
-    /// Real-audio samples per chunk (the part the caller advances by between
-    /// successive calls).
-    public static let chunkSamples: Int = 20320
+    /// Mel frames this variant emits per call (128 canonical; 256 pairs with
+    /// `encode_256` so the batch path halves its encoder invocations).
+    public let frames: Int
+    /// Real-audio samples per chunk = frames * 160 (10 ms hop).
+    public let chunkSamples: Int
+    /// Total input samples per call = left context + chunk.
+    public let audioSamples: Int
 
-    public init(model: AIModel) async throws {
-        guard let fn = try model.loadFunction(named: "preprocess_audio") else {
-            throw ASRError.missingFunction("preprocess_audio")
+    public init(model: AIModel, frames: Int = 128) async throws {
+        let name = frames == 128 ? "preprocess_audio" : "preprocess_audio_\(frames)"
+        guard let fn = try model.loadFunction(named: name) else {
+            throw ASRError.missingFunction(name)
         }
         self.function = fn
+        self.frames = frames
+        self.chunkSamples = frames * 160
+        self.audioSamples = Self.leftContextSamples + frames * 160
     }
 
     /// Convert [1, 20832] audio (context + chunk) to [1, 128, 128] mel

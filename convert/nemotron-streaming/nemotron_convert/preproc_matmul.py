@@ -42,9 +42,22 @@ N_MELS = 128
 OUT_FRAMES = 128
 
 
+def chunk_samples(out_frames: int) -> int:
+    return out_frames * HOP
+
+
+def audio_samples(out_frames: int) -> int:
+    return LEFT_CONTEXT + chunk_samples(out_frames)
+
+
 class NemotronPreprocessorForCoreAI(nn.Module):
-    def __init__(self, featurizer: nn.Module):
+    """`out_frames` parameterizes the fixed shapes: 128 (the canonical
+    20832-sample contract) or 256 (41472 samples, pairs with encode_256 so the
+    batch path halves its encoder weight-restreams)."""
+
+    def __init__(self, featurizer: nn.Module, out_frames: int = OUT_FRAMES):
         super().__init__()
+        self.out_frames = out_frames
         self.preemph = float(featurizer.preemph)
 
         hann = featurizer.window.detach().float()           # [400]
@@ -72,9 +85,9 @@ class NemotronPreprocessorForCoreAI(nn.Module):
         # Constant gather indices for framing — coreai_torch has no lowering
         # for aten.unfold, so frames are gathered by index instead: frame k
         # covers padded-buffer [k*160+256, k*160+768).
-        starts = torch.arange(OUT_FRAMES) * HOP + 256
+        starts = torch.arange(out_frames) * HOP + 256
         idx = (starts.view(-1, 1) + torch.arange(N_FFT).view(1, -1)).reshape(-1)
-        self.register_buffer("frame_idx", idx)  # [128*512] int64
+        self.register_buffer("frame_idx", idx)  # [out_frames*512] int64
 
     def forward(self, audio: torch.Tensor, audio_length: torch.Tensor) -> torch.Tensor:
         x = audio  # [1, 20832]
@@ -82,7 +95,7 @@ class NemotronPreprocessorForCoreAI(nn.Module):
         # Right-pad so frame 127's 512-sample window fits; frames start at
         # k*160 + 256 (stft center equivalence given the 512 left context).
         y = torch.nn.functional.pad(y, (0, 256))
-        frames = y[:, self.frame_idx].view(1, OUT_FRAMES, N_FFT)  # [1, 128, 512]
+        frames = y[:, self.frame_idx].view(1, self.out_frames, N_FFT)  # [1, 128, 512]
         frames = frames * self.window
         re = frames @ self.dft_re                            # [1, 128, 257]
         im = frames @ self.dft_im

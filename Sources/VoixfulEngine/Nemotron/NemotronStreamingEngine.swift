@@ -55,6 +55,10 @@ public actor NemotronStreamingEngine {
     // MARK: - Sessions
 
     private let preprocess: PreprocessSession?
+    /// 256-frame preprocessor variant; pairs with `encode_256` so the batch
+    /// path halves its encoder invocations (each encode call re-streams the
+    /// full 0.6B encoder weights — fewer, bigger chunks win on bandwidth).
+    private let preprocess256: PreprocessSession?
     private let encoder: EncoderSession
     /// The multi-function model handle, retained so the batch path can lazily
     /// open the canonical 128-frame window when the streaming window differs.
@@ -63,6 +67,7 @@ public actor NemotronStreamingEngine {
     /// `preprocess_audio` emits fixed [1,128,128] mels, so batch always runs
     /// the 128-frame `encode` regardless of the streaming `ChunkSize`.
     private var batchEncoder: EncoderSession?
+    private var batchEncoderName: String = ""
     private let prediction: PredictionSession
     private let joiner: JoinerSession
     private let decoder: GreedyRNNTDecoder
@@ -190,6 +195,7 @@ public actor NemotronStreamingEngine {
         // the Swift MelExtractor, so a model without the baked preprocessor can
         // still run streaming.
         self.preprocess = try? await PreprocessSession(model: model)
+        self.preprocess256 = try? await PreprocessSession(model: model, frames: 256)
 
         // Pick the encoder window program for the requested ChunkSize.
         // `totalFrames` is in 80 ms encoder frames; the mel hop is 10 ms and
@@ -535,19 +541,32 @@ public actor NemotronStreamingEngine {
         var perf = PerfCounters()
         perf.audioMs = Double(audio.count) / 16.0  // ms (16 kHz)
 
-        let chunkSamples = PreprocessSession.chunkSamples          // 20320
+        // Pair the largest available (preprocessor variant, encoder window):
+        // 256-frame chunks halve encoder invocations vs the canonical 128.
+        let pre: PreprocessSession
+        let encoderName: String
+        let framesPerChunk: Int
+        // 256 is opt-in (VOIXFUL_BATCH_CHUNK=256): ~25% faster encode on the
+        // 5.5 s fixture (160 -> ~120 ms) but bigger chunk steps cost mild
+        // segmentation quirks at boundaries; batch defaults to quality.
+        let want256 = ProcessInfo.processInfo.environment["VOIXFUL_BATCH_CHUNK"] == "256"
+        if want256, let p256 = preprocess256 {
+            pre = p256; encoderName = "encode_256"; framesPerChunk = 256
+        } else if let p = preprocess {
+            pre = p; encoderName = "encode"; framesPerChunk = 128
+        } else {
+            throw ASRError.missingFunction("preprocess_audio")
+        }
+        let chunkSamples = pre.chunkSamples
         let leftContext = PreprocessSession.leftContextSamples     // 512
-        let inputSamples = PreprocessSession.audioSamples          // 20832
-        // Batch is pinned to the canonical 128-frame window: preprocess_audio
-        // emits fixed [1,128,128] mels. If streaming picked a smaller window,
-        // lazily open (and reset) a dedicated canonical-window session.
-        let framesPerChunk = 128
+        let inputSamples = pre.audioSamples
         let encoder: EncoderSession
-        if encoderFramesPerChunk == 128 {
+        if framesPerChunk == encoderFramesPerChunk {
             encoder = self.encoder
         } else {
-            if batchEncoder == nil {
-                batchEncoder = try await EncoderSession(model: model, functionName: "encode")
+            if batchEncoder == nil || batchEncoderName != encoderName {
+                batchEncoder = try await EncoderSession(model: model, functionName: encoderName)
+                batchEncoderName = encoderName
             }
             await batchEncoder!.reset()
             encoder = batchEncoder!
@@ -612,10 +631,7 @@ public actor NemotronStreamingEngine {
             let cpyMs = Date().timeIntervalSince(cpyStart) * 1000
 
             let preStart = Date()
-            guard let preprocess else {
-                throw ASRError.missingFunction("preprocess_audio")
-            }
-            let mel = try await preprocess.extract(audio: audioND, length: lengthND)
+            let mel = try await pre.extract(audio: audioND, length: lengthND)
             let preMs = Date().timeIntervalSince(preStart) * 1000
 
             let encStart = Date()

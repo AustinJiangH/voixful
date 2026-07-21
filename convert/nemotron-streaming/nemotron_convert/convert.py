@@ -180,6 +180,18 @@ def main(argv: list[str] | None = None) -> int:
         att = att_by_window.get(w, default_att)
         encoder_wrapper.inner.set_default_att_context_size(att)
         encoder_wrapper.inner.setup_streaming_params()
+        if w > 128:
+            # Larger-than-default chunks: keep the trained [70,13] attention
+            # masks and 70-frame cache, but fix the chunk bookkeeping so the
+            # graph returns ALL of the window's valid frames. Without this the
+            # cfg's valid_out_len stays 14 (tuned to 112-mel chunks) and a
+            # 256-mel chunk silently loses 16 of its 30 output frames —
+            # measured as words dropped at every chunk boundary.
+            enc_frames = w // 8
+            cfg = encoder_wrapper.inner.streaming_cfg
+            cfg.chunk_size = [w - 7, w]
+            cfg.shift_size = [w - 7, w]
+            cfg.valid_out_len = enc_frames
         print(f"Exporting encoder chunk window {w} frames (att_context={att}) -> function '{name}' ...")
         converter.add_exported_program(
             export_encoder(encoder_wrapper, chunk_frames=w),
@@ -218,25 +230,29 @@ def main(argv: list[str] | None = None) -> int:
     # shapes + matmuls, parity-tested against the NeMo featurizer (7e-5).
     # Its presence flips the CLI/engine into the pipelined batch mode
     # (encode(N+1) overlapped with decode(N)).
-    from .preproc_matmul import AUDIO_SAMPLES, NemotronPreprocessorForCoreAI
+    from .preproc_matmul import NemotronPreprocessorForCoreAI, audio_samples
 
     featurizer = modules["preprocessor"].featurizer
     featurizer.dither = 0.0
-    preproc_wrapper = NemotronPreprocessorForCoreAI(featurizer).eval()
-    print("Exporting preprocess_audio (matmul mel, 20832 samples -> [1,128,128]) ...")
-    exported_preproc = torch.export.export(
-        preproc_wrapper,
-        args=(
-            torch.zeros(1, AUDIO_SAMPLES, dtype=torch.float32),
-            torch.tensor([AUDIO_SAMPLES], dtype=torch.int32),
-        ),
-    ).run_decompositions(coreai_torch.get_decomp_table())
-    converter.add_exported_program(
-        exported_preproc,
-        entrypoint_name="preprocess_audio",
-        input_names=["audio", "audio_length"],
-        output_names=["mel"],
-    )
+    # 128-frame canonical + a 256-frame variant pairing with encode_256 so the
+    # batch path can halve its encoder invocations.
+    for frames, name in [(128, "preprocess_audio"), (256, "preprocess_audio_256")]:
+        n = audio_samples(frames)
+        preproc_wrapper = NemotronPreprocessorForCoreAI(featurizer, out_frames=frames).eval()
+        print(f"Exporting {name} (matmul mel, {n} samples -> [1,128,{frames}]) ...")
+        exported_preproc = torch.export.export(
+            preproc_wrapper,
+            args=(
+                torch.zeros(1, n, dtype=torch.float32),
+                torch.tensor([n], dtype=torch.int32),
+            ),
+        ).run_decompositions(coreai_torch.get_decomp_table())
+        converter.add_exported_program(
+            exported_preproc,
+            entrypoint_name=name,
+            input_names=["audio", "audio_length"],
+            output_names=["mel"],
+        )
 
     # VERIFY: add_exported_program kwargs — PLAN.md §3 Step 4 snippet does not show a
     # `entrypoint_name=` keyword explicitly. The WWDC 2026 "Dive into Core AI" session
