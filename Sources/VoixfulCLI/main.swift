@@ -207,22 +207,38 @@ struct Mic: AsyncParsableCommand {
     var debug: Bool = false
 
     func run() async throws {
-        // Build the model-specific transcriber in streaming mode with volatile
-        // reporting (fixed cost per chunk, live partials), then hand it to the
-        // shared, model-agnostic mic session driver, which captures audio,
-        // drives the analyzer, and renders the live UI. A new model's CLI does
-        // exactly this with its own transcriber.
-        let transcriber: NemotronStreamingTranscriber
+        // Auto-detect the backend like `transcribe` does. Nemotron streams
+        // natively (per-chunk partials); the full-context backends get live
+        // partials via LiveFullContextTranscriber, which re-transcribes the
+        // accumulated utterance on a throttle — viable because those engines
+        // are fast and window-laddered. Either way the shared mic session
+        // driver captures audio, drives the analyzer, and renders the UI.
+        let modelURL = URL(fileURLWithPath: model)
+        let locale = Locale(identifier: language)
+        let piecesURL = modelURL.appendingPathComponent("pieces.txt")
+        let transcriber: any Transcribing
         do {
-            transcriber = try NemotronStreamingTranscriber(
-                modelURL: URL(fileURLWithPath: model),
-                locale: Locale(identifier: language),
-                chunkSizeMS: chunk,
-                mode: .streaming,
-                reportingOptions: [.volatileResults],
-                attributeOptions: [],
-                debug: debug
-            )
+            switch try ModelBackend.detect(modelURL: modelURL) {
+            case .nemotron:
+                transcriber = try NemotronStreamingTranscriber(
+                    modelURL: modelURL,
+                    locale: locale,
+                    chunkSizeMS: chunk,
+                    mode: .streaming,
+                    reportingOptions: [.volatileResults],
+                    attributeOptions: [],
+                    debug: debug
+                )
+            case .parakeet:
+                transcriber = LiveFullContextTranscriber<ParakeetTDTEngine>(
+                    modelURL: modelURL, piecesURL: piecesURL, locale: locale)
+            case .cohere:
+                transcriber = LiveFullContextTranscriber<CohereTranscribeEngine>(
+                    modelURL: modelURL, piecesURL: piecesURL, locale: locale)
+            case .granite:
+                transcriber = LiveFullContextTranscriber<GraniteNAREngine>(
+                    modelURL: modelURL, piecesURL: piecesURL, locale: locale)
+            }
         } catch {
             throw ValidationError("could not create transcriber: \(error)")
         }
