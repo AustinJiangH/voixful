@@ -144,3 +144,57 @@ def check(argv=None) -> int:
     parser.add_argument("--wav", required=True)
     args = parser.parse_args(argv)
     return asyncio.run(check_async(args))
+
+
+def export_minimal(argv=None) -> int:
+    """Palette4 minimal asset (prefill_asr_192 + step_asr) with a cached
+    palettized LLM so iterations skip the 15-min kmeans. --variant selects
+    graph experiments for the specializer-crash bisect."""
+    import torch
+
+    import coreai_torch
+
+    from .convert import _palettize
+    from .export import export_prefill, export_step
+    from .models import QwenPrefillForCoreAI, QwenStepForCoreAI
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--out", required=True)
+    parser.add_argument("--cache", default="/tmp/canary-llm-asr-palette4.pt")
+    args = parser.parse_args(argv)
+
+    try:
+        llm = torch.load(args.cache, weights_only=False)
+        print(f"loaded palettized llm from {args.cache}")
+    except Exception:
+        model = load_model()
+        mods = extract_modules(model)
+        llm = _palettize(mods["llm_asr"], (torch.zeros(1, 8, dtype=torch.int64),), "palette4")
+        torch.save(llm, args.cache)
+        print(f"palettized + cached to {args.cache}")
+
+    converter = coreai_torch.TorchConverter()
+    converter.add_exported_program(
+        export_prefill(QwenPrefillForCoreAI(llm, BUCKET).eval()),
+        entrypoint_name=f"prefill_asr_{BUCKET}",
+        input_names=["embeds", "last_idx"],
+        state_names=["k_cache", "v_cache"],
+        output_names=["token"],
+    )
+    print("exported prefill")
+    converter.add_exported_program(
+        export_step(QwenStepForCoreAI(llm).eval()),
+        entrypoint_name="step_asr",
+        input_names=["tok", "pos"],
+        state_names=["k_cache", "v_cache"],
+        output_names=["token"],
+    )
+    print("exported step")
+    prog = converter.to_coreai()
+    prog.optimize()
+    out = Path(args.out)
+    if out.exists():
+        shutil.rmtree(out)
+    prog.save_asset(out)
+    print(f"wrote {out}")
+    return 0

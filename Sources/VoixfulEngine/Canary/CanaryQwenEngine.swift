@@ -276,14 +276,22 @@ public actor CanaryQwenEngine {
         var lastIdx = NDArray(shape: [1], scalarType: .int32)
         lastIdx.setInt32(at: 0, to: Int32(promptLen - 1))
 
+        // Prefill is FUNCTIONAL (caches as plain outputs): in-graph state
+        // writes corrupt concurrent compute in deep graphs (measured — see
+        // convert/canary-qwen bisect). The host loads the returned caches
+        // into the persistent state buffers once per pass; the step function
+        // then updates them statefully (one-hot write, Cohere-proven).
         let prefill = try await fn(prefillName)
-        var states = InferenceFunction.MutableViews()
-        states.insert(&kCache, for: "k_cache")
-        states.insert(&vCache, for: "v_cache")
         var out = try await prefill.run(
-            inputs: ["embeds": embedsND, "last_idx": lastIdx], states: states)
-        guard let tok0 = out.remove("token")?.ndArray else { throw ASRError.missingOutput("token") }
+            inputs: ["embeds": embedsND, "last_idx": lastIdx],
+            states: InferenceFunction.MutableViews())
+        guard let tok0 = out.remove("token")?.ndArray,
+              let kOut = out.remove("k_out")?.ndArray,
+              let vOut = out.remove("v_out")?.ndArray else {
+            throw ASRError.missingOutput("prefill outputs")
+        }
         var tok = tok0.view(as: Int32.self).withUnsafePointer { p, _, _ in p[0] }
+        loadPrefillCaches(kOut: kOut, vOut: vOut, rows: bucket)
 
         let step = try await fn(stepName)
         var ids: [Int32] = []
@@ -305,6 +313,30 @@ public actor CanaryQwenEngine {
             pos += 1
         }
         return ids
+    }
+
+    /// Copy the functional prefill's caches [28, 8, rows, 128] into the
+    /// persistent state buffers [28, 1, 8, maxSeq, 128] at rows [0, rows).
+    private func loadPrefillCaches(kOut: NDArray, vOut: NDArray, rows: Int) {
+        let d = 128, kv = 8, layers = 28
+        let maxSeq = self.maxSeq
+        func copy(_ src: NDArray, into dst: inout NDArray) {
+            src.view(as: Float.self).withUnsafePointer { s, _, _ in
+                var mv = dst.mutableView(as: Float.self)
+                mv.withUnsafeMutablePointer { p, _, _ in
+                    for l in 0..<layers {
+                        for h in 0..<kv {
+                            let srcOff = ((l * kv + h) * rows) * d
+                            let dstOff = ((l * kv + h) * maxSeq) * d
+                            p.advanced(by: dstOff)
+                                .update(from: s.advanced(by: srcOff), count: rows * d)
+                        }
+                    }
+                }
+            }
+        }
+        copy(kOut, into: &kCache)
+        copy(vOut, into: &vCache)
     }
 
     /// Drop a leading Qwen3 `<think>...</think>` block (empty under /no_think).

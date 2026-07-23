@@ -50,15 +50,19 @@ def split_at_placeholder(ids: list[int], placeholder: int) -> tuple[list[int], l
 
 def generate(prefill, step, embeds: torch.Tensor, prompt_len: int, bucket: int,
              max_new: int = 256) -> list[int]:
-    """embeds [1,P,2048] -> generated ids (greedy, stop at EOS). Caches are
-    threaded functionally, exactly as the runtime passes them via states."""
+    """embeds [1,P,2048] -> generated ids (greedy, stop at EOS)."""
     assert prompt_len <= bucket <= MAX_SEQ
     padded = torch.zeros(1, bucket, embeds.shape[-1])
     padded[:, :prompt_len] = embeds
-    k = torch.zeros(28, 1, 8, MAX_SEQ, 128)
-    v = torch.zeros(28, 1, 8, MAX_SEQ, 128)
     with torch.no_grad():
-        tok, k, v = prefill(padded, torch.tensor([prompt_len - 1], dtype=torch.int32), k, v)
+        tok, k_out, v_out = prefill(padded, torch.tensor([prompt_len - 1], dtype=torch.int32))
+        # Host loads the functional prefill's caches into the step's
+        # persistent state — mirrors the Swift engine's memcpy.
+        L = k_out.shape[2]
+        step.k_cache.zero_()
+        step.v_cache.zero_()
+        step.k_cache[:, 0, :, :L, :] = k_out
+        step.v_cache[:, 0, :, :L, :] = v_out
         out: list[int] = []
         pos = prompt_len
         while len(out) < max_new:
@@ -66,8 +70,8 @@ def generate(prefill, step, embeds: torch.Tensor, prompt_len: int, bucket: int,
             if t == EOS:
                 break
             out.append(t)
-            tok, k, v = step(torch.tensor([t], dtype=torch.int32),
-                             torch.tensor([pos], dtype=torch.int32), k, v)
+            tok = step(torch.tensor([t], dtype=torch.int32),
+                       torch.tensor([pos], dtype=torch.int32))
             pos += 1
     return out
 

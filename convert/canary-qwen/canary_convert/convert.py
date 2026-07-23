@@ -157,6 +157,7 @@ def main(argv: list[str] | None = None) -> int:
             bucket = _asr_bucket(mel.shape[2], overhead)
             pf = QwenPrefillForCoreAI(llm_asr, bucket).eval()
             st = QwenStepForCoreAI(llm_asr).eval()
+            st.k_cache, st.v_cache = pf.k_cache, pf.v_cache
             ids = generate(pf, st, pemb, P, bucket)
             text = nemo_tok.ids_to_text(torch.tensor(ids))
             print(f"post-palettize ASR self-check: {text!r}")
@@ -193,8 +194,7 @@ def main(argv: list[str] | None = None) -> int:
                 export_prefill(QwenPrefillForCoreAI(llm, b).eval()),
                 entrypoint_name=f"prefill_{variant}_{b}",
                 input_names=["embeds", "last_idx"],
-                state_names=["k_cache", "v_cache"],
-                output_names=["token"],
+                output_names=["token", "k_out", "v_out"],
             )
             print(f"exported prefill_{variant}_{b}")
         converter.add_exported_program(
