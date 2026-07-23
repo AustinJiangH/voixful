@@ -24,7 +24,7 @@ actor MicDisplay {
     private var device = ""
     private var sr = 0
     private var ch = 0
-    private var printed = ""             // transcript text already emitted
+    private var liveRows = 0             // terminal rows the drawn live partial occupies
     private var peak: Float = 0
     private var hasBuffers = true
 
@@ -55,12 +55,14 @@ actor MicDisplay {
         // appears just above the footer and older lines scroll up — the
         // newest words stay where the eye is, next to the meter.
         out("\u{1B}[\(rows - Self.footerHeight);1H")
-        printed = ""
+        liveRows = 0
         drawFooter()
     }
 
     func setPartial(_ text: String) {
-        append(text.trimmingCharacters(in: .whitespacesAndNewlines))
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty else { return }
+        render(t, seal: false)
     }
 
     func setLevel(_ p: Float, hasBuffers: Bool) {
@@ -73,10 +75,7 @@ actor MicDisplay {
         let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !t.isEmpty else { return }
         if enabled {
-            append(t)
-            out("\n")            // seal the final line; next utterance starts fresh
-            printed = ""
-            drawFooter()
+            render(t, seal: true)
         } else {
             out(t + "\n")
         }
@@ -91,21 +90,36 @@ actor MicDisplay {
         enabled = false
     }
 
-    /// Append the cumulative transcript's new suffix into the scroll area. The
-    /// streaming text is append-only (greedy RNN-T commits tokens), so we print
-    /// only the delta; on the rare revision we start a fresh line.
-    private func append(_ text: String) {
-        guard enabled, !text.isEmpty else { return }
-        let delta: String
-        if text.hasPrefix(printed) {
-            delta = String(text.dropFirst(printed.count))
+    /// Redraw the live partial IN PLACE. Partials are cumulative transcripts
+    /// that get REVISED, not just extended (the full-context backends
+    /// re-transcribe the whole utterance each refresh, and even Nemotron's
+    /// detokenizer can retouch punctuation), so delta-append is wrong: any
+    /// revision would spam a fresh line per refresh. Instead the current live
+    /// block — which may span several wrapped rows — is erased (cursor up to
+    /// its first row, clear to end of screen) and repainted. Long partials
+    /// clamp to a tail window of a few rows ("…" prefix) so the block never
+    /// outgrows what we can reliably erase inside the scroll region.
+    /// `seal: true` paints the final text and newlines past it, so the next
+    /// utterance starts a fresh block.
+    private func render(_ text: String, seal: Bool) {
+        guard enabled else { return }
+        let cols = max(Term.cols, 10)
+        if liveRows > 1 { out("\u{1B}[\(liveRows - 1)A") }  // to block's first row
+        out("\r\u{1B}[0J")  // col 1, erase old block (+footer; redrawn below)
+        if seal {
+            out(text + "\n")     // final text flows + scrolls naturally
+            liveRows = 0
         } else {
-            delta = "\n" + text
+            let maxRows = min(6, max(1, rows - Self.footerHeight - 1))
+            let maxChars = maxRows * cols - 1
+            var shown = text
+            if shown.count > maxChars {
+                shown = "…" + String(shown.suffix(maxChars - 1))
+            }
+            out(shown)
+            liveRows = max(1, (shown.count + cols - 1) / cols)
         }
-        printed = text
-        guard !delta.isEmpty else { return }
-        out(delta)               // flows + wraps + scrolls within the region
-        drawFooter()             // a scroll may have occurred; keep footer fresh
+        drawFooter()
     }
 
     private func drawFooter() {
