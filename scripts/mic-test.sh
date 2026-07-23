@@ -12,7 +12,7 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-MODEL="$ROOT/fixtures/aimodel/nemotron-streaming.aimodel"
+MODEL="${VOIXFUL_MODEL:-$ROOT/fixtures/aimodel/nemotron-streaming.aimodel}"
 BIN="$ROOT/.build/release/voixful"
 WAV="/tmp/voixful-mic-test.wav"
 

@@ -1,6 +1,6 @@
-// Phase H — Cache round-trip tests for Core AI's MutableViews state machinery.
+// Cache round-trip tests for Core AI's MutableViews state machinery.
 //
-// Two tests cover the two layers PLAN.md §4 separates:
+// Two tests cover the two layers of the cache machinery:
 //
 //   1. `testNDArrayWriteRead` — synthetic, no model required. Allocates an
 //      `NDArray`, writes a known pattern via the mutable accessor, reads it
@@ -62,9 +62,9 @@ final class CacheRoundTripTests: XCTestCase {
 
         var array = NDArray(shape: shape, scalarType: .float32)
 
-        // Write phase: zero first (NDArray initial contents are unspecified
-        // per PLAN.md §4 — EncoderSession follows the same zero-then-write
-        // convention), then fill with the test pattern.
+        // Write phase: zero first (NDArray initial contents are unspecified —
+        // EncoderSession follows the same zero-then-write convention), then
+        // fill with the test pattern.
         array.zeroFloat32()
         var mv = array.mutableView(as: Float.self)
         mv.withUnsafeMutablePointer { ptr, _, _ in
@@ -135,8 +135,8 @@ final class CacheRoundTripTests: XCTestCase {
     /// properties via the `@testable import VoixfulEngine` access path. The
     /// properties are declared at internal-visibility (no access modifier)
     /// in EncoderSession.swift, which is the right call for now — exposing
-    /// `preCache` etc. as `public` would invite callers to take ownership of
-    /// PLAN.md §11 Anti-pattern 4 ("don't reallocate cache buffers per chunk").
+    /// `preCache` etc. as `public` would invite callers to violate the
+    /// "don't reallocate cache buffers per chunk" rule.
     /// If the test fails to build because the properties are made private in
     /// a future cleanup, expose an internal `func cacheValuesForTest() -> ...`
     /// hook on EncoderSession rather than weakening the cache properties'
@@ -148,9 +148,9 @@ final class CacheRoundTripTests: XCTestCase {
             throw XCTSkip("requires .aimodel fixture at \(modelURL.path) — see fixtures/README.md")
         }
 
-        // VERIFY: `AIModel(contentsOf:)` signature per PLAN.md §6 "Model loading".
-        // If it turns out to be sync (`throws` only, no `await`), remove the
-        // `await` here AND in NemotronStreamingEngine.init.
+        // VERIFY: `AIModel(contentsOf:)` signature. If it turns out to be sync
+        // (`throws` only, no `await`), remove the `await` here AND in
+        // NemotronStreamingEngine.init.
         let model: AIModel
         do {
             model = try await AIModel(contentsOf: modelURL)

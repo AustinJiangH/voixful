@@ -74,7 +74,7 @@ public enum Smoke {
     /// Validate that the two enums Phase F locked in still hold their
     /// documented invariants: `ChunkSize.allCases.count == 5` and
     /// `Language.allCases.count == 40`. A drift here means somebody added or
-    /// removed a case without updating PLAN.md.
+    /// removed a case.
     public static func step1EnumSanity() -> SmokeStepResult {
         let chunkCount = ChunkSize.allCases.count
         let langCount = Language.allCases.count
@@ -143,7 +143,7 @@ public enum Smoke {
         #if canImport(CoreAI)
         let oneHot = LangID.oneHot(language)
 
-        // VERIFY: NDArray scalar accessor pattern (PLAN.md §10). If the
+        // VERIFY: NDArray scalar accessor pattern (open question). If the
         // accessor below is unsupported in this env, the build fails before
         // we get here — the test harness picks it up at compile time. The
         // runtime branch we guard is "step ran but the buffer didn't behave

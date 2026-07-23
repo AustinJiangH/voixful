@@ -1,4 +1,4 @@
-"""Pulls submodules from a NeMo ASRModel for Core AI conversion. VERIFY: inspect model.cfg to resolve d_model=512 vs 1024 per PLAN.md §10 open question 2."""
+"""Pulls submodules from a NeMo ASRModel for Core AI conversion. VERIFY: inspect model.cfg to resolve d_model=512 vs 1024 (open question)."""
 
 from __future__ import annotations
 
@@ -15,10 +15,9 @@ def extract_modules_from_nemo(model_id: str) -> dict[str, Any]:
       - encoder: the cache-aware FastConformer (`nn.Module`)
       - prediction: the 2-layer LSTM prediction network (`nn.Module`)
       - joiner: the RNN-T joint (`nn.Module`)
-      - preprocessor: NeMo's AudioToMelSpectrogramPreprocessor (see PLAN.md §5)
+      - preprocessor: NeMo's AudioToMelSpectrogramPreprocessor
       - config: the model's `cfg` (OmegaConf DictConfig) — inspect to resolve
-        the d_model 512 vs 1024 ambiguity per PLAN.md §10 open question 2 and the
-        preprocessor settings per §5
+        the d_model 512 vs 1024 ambiguity and the preprocessor settings
       - tokenizer: SentencePiece tokenizer (vocab 13,087)
     """
 
@@ -27,7 +26,7 @@ def extract_modules_from_nemo(model_id: str) -> dict[str, Any]:
     # Enable cache support BEFORE pulling out the encoder. This is the toggle that
     # makes forward_for_export accept and return the streaming caches. Without it,
     # the exported graph would silently drop streaming state (the NeMo
-    # "set_export_config" pattern from PLAN.md §3 Step 1 — verified 2026-06-11
+    # "set_export_config" pattern — verified 2026-06-11
     # against the english-only sibling).
     model.set_export_config({"cache_support": "True"})
 
@@ -36,14 +35,14 @@ def extract_modules_from_nemo(model_id: str) -> dict[str, Any]:
     # convenience that gets in the way of inference export).
     model.joint._fuse_loss_wer = False
 
-    # VERIFY: NeMo attribute names — PLAN.md §3 Step 1 uses .encoder / .decoder / .joint
-    # / .preprocessor / .cfg / .tokenizer. Confirm against the actual loaded class in
-    # Phase 1; some NeMo model classes expose `prediction_network` or `joint_net` aliases.
+    # VERIFY: NeMo attribute names — this package uses .encoder / .decoder / .joint
+    # / .preprocessor / .cfg / .tokenizer. Confirm against the actual loaded class;
+    # some NeMo model classes expose `prediction_network` or `joint_net` aliases.
 
-    # VERIFY: mel preprocessor exportability — PLAN.md §10 open question 4 asks whether
+    # VERIFY: mel preprocessor exportability (open question) — whether
     # `torch.export` accepts NeMo's AudioToMelSpectrogramPreprocessor (the `make_seq_mask_like`
-    # op blocked coremltools per PLAN.md §5). This package returns the preprocessor for
-    # callers to test exportability in Phase 4 (Branch A); if Branch A fails, the
+    # op blocked coremltools). This package returns the preprocessor for
+    # callers to test exportability (Branch A); if Branch A fails, the
     # preprocessor is reimplemented via TorchMetalKernel (Branch B) or in Swift+Accelerate
     # (Branch C), and convert.py does not pack it into the .aimodel.
     return {

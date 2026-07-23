@@ -45,10 +45,10 @@ struct Transcribe: AsyncParsableCommand {
     @Option(help: "Path to the .aimodel directory.")
     var model: String
 
-    @Option(help: "Force the model architecture (nemotron/parakeet/cohere). Default: auto-detect from the model.")
+    @Option(help: "Force the model architecture (nemotron/parakeet/cohere/granite/canary). Default: auto-detect from the model.")
     var backend: ModelBackend?
 
-    @Option(help: "SentencePiece vocab for parakeet/cohere. Default: sibling 'pieces.txt' of the model.")
+    @Option(help: "SentencePiece vocab for parakeet/cohere/granite/canary. Default: sibling 'pieces.txt' of the model.")
     var pieces: String?
 
     @Option(help: "Write the transcript here (default: stdout).")

@@ -179,8 +179,8 @@ def check_models_wrappers() -> None:
     """Each of the three wrapper classes (encoder, prediction, joiner) can be
     instantiated against a `MagicMock()` NeMo submodule, and the encoder's
     three cache buffers exist with the documented shapes (verified against the
-    English-only checkpoint 2026-06-11; the PLAN's "four caches" was extrapolation
-    from the soniqo Core ML port for the multilingual model).
+    English-only checkpoint 2026-06-11; the earlier "four caches" note was
+    extrapolation from the soniqo Core ML port for the multilingual model).
     """
 
     from nemotron_convert.models import (

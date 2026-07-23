@@ -22,8 +22,7 @@ A streaming ASR model for **Apple Silicon**, converted from
 [`nvidia/nemotron-speech-streaming-en-0.6b`](https://huggingface.co/nvidia/nemotron-speech-streaming-en-0.6b)
 to Apple's **Core AI** `.aimodel` format and **4-bit k-means palettized** so the
 Neural Engine keeps the weights compressed at runtime. Used by the
-<!-- TODO: replace placeholder repo URL with the real one before publishing -->
-[Voixful](https://github.com/your-org/voixful) Swift package.
+[Voixful](https://github.com/AustinJiangH/voixful) Swift package.
 
 ## Attribution & License
 

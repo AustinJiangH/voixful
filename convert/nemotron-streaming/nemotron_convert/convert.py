@@ -1,4 +1,4 @@
-"""Default: FP16. No coreai_opt invocation. See PLAN.md §3 Step 5b for the conditional quantization path."""
+"""Default: FP16. No coreai_opt invocation. The conditional quantization path runs only when --quantize is set."""
 
 from __future__ import annotations
 
@@ -24,8 +24,7 @@ from .models import (
 DEFAULT_MODEL_ID = "nvidia/nemotron-speech-streaming-en-0.6b"
 DEFAULT_OUTPUT = "./nemotron-streaming.aimodel"
 
-# The three named functions packed into a single multi-function .aimodel per
-# PLAN.md §3 Step 4 and Decision Log #3.
+# The three named functions packed into a single multi-function .aimodel.
 ENCODE_FN = "encode"
 PREDICT_STEP_FN = "predict_step"
 JOIN_FN = "join"
@@ -35,9 +34,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="nemotron-convert",
         description=(
-            "Convert nvidia/nemotron-3.5-asr-streaming-0.6b to a single Core AI "
+            "Convert nvidia/nemotron-speech-streaming-en-0.6b to a single Core AI "
             ".aimodel with three functions (encode, predict_step, join). "
-            "FP16 default; see PLAN.md §3 Step 5 for rationale."
+            "FP16 default."
         ),
     )
     parser.add_argument("--model-id", default=DEFAULT_MODEL_ID)
@@ -62,7 +61,7 @@ def main(argv: list[str] | None = None) -> int:
         choices=["none", "int8", "int8-mmap", "palette4", "palette6"],
         default="none",
         help=(
-            "Encoder weight compression (PLAN.md §3 Step 5b). 'int8'/'int8-mmap' = "
+            "Encoder weight compression. 'int8'/'int8-mmap' = "
             "INT8 linear weight-only (disk/bandwidth). 'palette4'/'palette6' = "
             "4/6-bit k-means palettization — the format Apple documents as the "
             "Neural Engine's runtime-memory + latency win (kept compressed, "
@@ -143,8 +142,8 @@ def main(argv: list[str] | None = None) -> int:
     modules = extract_modules_from_nemo(args.model_id)
 
     # Step (b): build the three Core-AI-shaped wrappers.
-    # VERIFY: d_model — PLAN.md §10 open question 2. The wrapper defaults to 1024
-    # (matching soniqo/speech-swift's cache shape). Once Phase 1 inspects
+    # VERIFY: d_model (open question). The wrapper defaults to 1024
+    # (matching soniqo/speech-swift's cache shape). Once we inspect
     # modules["config"], pass the resolved value through here rather than relying on
     # the default.
     encoder_wrapper = NemotronEncoderForCoreAI(modules["encoder"])
@@ -166,7 +165,7 @@ def main(argv: list[str] | None = None) -> int:
     exported_prediction = export_prediction(prediction_wrapper)
     exported_joiner = export_joiner(joiner_wrapper)
 
-    # Step (d): pack into one multi-function .aimodel per PLAN.md §3 Step 4.
+    # Step (d): pack into one multi-function .aimodel.
     converter = coreai_torch.TorchConverter()
 
     # Per-window attention context: small windows use the checkpoint's TRAINED
@@ -254,13 +253,13 @@ def main(argv: list[str] | None = None) -> int:
             output_names=["mel"],
         )
 
-    # VERIFY: add_exported_program kwargs — PLAN.md §3 Step 4 snippet does not show a
-    # `entrypoint_name=` keyword explicitly. The WWDC 2026 "Dive into Core AI" session
-    # demonstrated multi-function .aimodel packing; confirm the exact keyword name
-    # (could be `name=` or positional) against the coreai_torch API once installed.
+    # VERIFY: add_exported_program kwargs — confirm the exact keyword name for the
+    # entrypoint (could be `name=` or positional) against the coreai_torch API once
+    # installed. The WWDC 2026 "Dive into Core AI" session demonstrated multi-function
+    # .aimodel packing.
 
     # Step (e): convert, framework-level optimize (no weight quantization), save.
-    # PLAN.md §3 Step 5: `coreai_opt` is NOT invoked here. FP16 default.
+    # `coreai_opt` is NOT invoked here. FP16 default.
     ai_program = converter.to_coreai()
     ai_program.optimize()
     if output_path.exists():
@@ -291,8 +290,7 @@ def main(argv: list[str] | None = None) -> int:
     print(
         f"Wrote {output_path} — a single Core AI multi-function .aimodel containing "
         f"the three named inference functions '{ENCODE_FN}', '{PREDICT_STEP_FN}', and "
-        f"'{JOIN_FN}' at FP16 precision (no coreai_opt quantization applied; see "
-        f"PLAN.md §3 Step 5b for the conditional quantization path)."
+        f"'{JOIN_FN}' at FP16 precision (no coreai_opt quantization applied)."
     )
     return 0
 

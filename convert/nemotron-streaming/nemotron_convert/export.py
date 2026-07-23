@@ -1,4 +1,4 @@
-"""torch.export each of the three wrapper modules with dynamic shapes and the coreai_torch decomposition table. See PLAN.md §3 Step 3."""
+"""torch.export each of the three wrapper modules with dynamic shapes and the coreai_torch decomposition table."""
 
 from __future__ import annotations
 

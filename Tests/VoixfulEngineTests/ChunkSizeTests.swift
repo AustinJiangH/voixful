@@ -1,8 +1,8 @@
-// Phase H — Unit tests for the `ChunkSize` enum from PLAN.md §2 "Chunk-size dial".
+// Unit tests for the `ChunkSize` enum ("Chunk-size dial").
 //
 // No external fixtures, no Core AI dependency: these tests run unconditionally
 // on every `swift test` invocation. They're the cheapest regression guard
-// against the §2 chunk-size table drifting away from the published Nemotron 3.5
+// against the chunk-size table drifting away from the published Nemotron 3.5
 // checkpoint's `att_context_size` settings.
 //
 // The five-case invariant (`ChunkSize.allCases.count == 5`) is double-asserted
@@ -16,19 +16,19 @@ final class ChunkSizeTests: XCTestCase {
 
     // MARK: - Cardinality
 
-    /// PLAN.md §2 lists exactly 5 chunk-size configurations.
-    /// Adding a 6th case (or removing one) requires a matching PLAN.md update.
+    /// There are exactly 5 chunk-size configurations.
+    /// Adding a 6th case (or removing one) is a deliberate change.
     func testChunkSizeCount() {
         XCTAssertEqual(ChunkSize.allCases.count, 5,
-                       "ChunkSize.allCases.count must be 5 per PLAN.md §2 chunk-size dial")
+                       "ChunkSize.allCases.count must be 5 (chunk-size dial)")
     }
 
     // MARK: - Per-case values
 
     /// `attContextRight` matches the `att_context_size = [56, R]` second value
-    /// from PLAN.md §2 for every case. These are constants of the published
-    /// checkpoint; if any of these change, the encoder will silently produce
-    /// wrong outputs at runtime.
+    /// for every case. These are constants of the published checkpoint; if any
+    /// of these change, the encoder will silently produce wrong outputs at
+    /// runtime.
     func testAttContextRight() {
         XCTAssertEqual(ChunkSize.ms80.attContextRight, 0,
                        "ms80 must have att_context_right = 0 (ultra-low latency)")
@@ -42,8 +42,8 @@ final class ChunkSizeTests: XCTestCase {
                        "ms1120 must have att_context_right = 13 (near-offline)")
     }
 
-    /// `totalFrames` is `1 + attContextRight` per the §2 table — the chunk
-    /// itself is always one 80 ms encoder frame plus the right context.
+    /// `totalFrames` is `1 + attContextRight` — the chunk itself is always
+    /// one 80 ms encoder frame plus the right context.
     func testTotalFrames() {
         XCTAssertEqual(ChunkSize.ms80.totalFrames, 1)
         XCTAssertEqual(ChunkSize.ms160.totalFrames, 2)
@@ -52,9 +52,9 @@ final class ChunkSizeTests: XCTestCase {
         XCTAssertEqual(ChunkSize.ms1120.totalFrames, 14)
     }
 
-    /// `durationMS` matches the "Total chunk" column of the §2 table verbatim.
-    /// Also equals `totalFrames * 80` (encoder frame stride from PLAN.md §2 /
-    /// the `// VERIFY: ... 80 ms encoder-frame stride ...` comment in Types.swift).
+    /// `durationMS` matches the "Total chunk" column of the chunk-size table
+    /// verbatim. Also equals `totalFrames * 80` (encoder frame stride; see the
+    /// `// VERIFY: ... 80 ms encoder-frame stride ...` comment in Types.swift).
     func testDurationMS() {
         XCTAssertEqual(ChunkSize.ms80.durationMS, 80)
         XCTAssertEqual(ChunkSize.ms160.durationMS, 160)
@@ -77,7 +77,7 @@ final class ChunkSizeTests: XCTestCase {
         }
     }
 
-    /// `totalFrames == 1 + attContextRight` per the §2 table derivation.
+    /// `totalFrames == 1 + attContextRight` by the chunk-size table derivation.
     func testTotalFramesMatchesContext() {
         for chunk in ChunkSize.allCases {
             XCTAssertEqual(
@@ -91,8 +91,7 @@ final class ChunkSizeTests: XCTestCase {
     // MARK: - Raw values
 
     /// `rawValue` is the CLI-friendly tag (`"80ms"`, `"320ms"`, etc.).
-    /// PLAN.md doesn't pin a specific spelling but the CLI parser in
-    /// `NemotronASRCLI` consumes these verbatim.
+    /// The CLI parser in `VoixfulCLI` consumes these verbatim.
     func testRawValues() {
         XCTAssertEqual(ChunkSize.ms80.rawValue, "80ms")
         XCTAssertEqual(ChunkSize.ms160.rawValue, "160ms")

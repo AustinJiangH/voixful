@@ -1,6 +1,6 @@
 // Phase E — Greedy RNN-T decoder.
 //
-// Implements the encoder-time / prediction-step loop from PLAN.md §6:
+// Implements the encoder-time / prediction-step loop:
 //
 //     for t in 0..<encoderOut.timeSteps {
 //         var symbolsThisStep = 0
@@ -23,7 +23,7 @@
 //     instance lives for the lifetime of one utterance; `reset()` clears the
 //     accumulator and also resets the prediction LSTM state.
 //
-// Strict constraints (PLAN.md §11 Anti-patterns):
+// Strict constraints (anti-patterns):
 //   - `maxSymbolsPerStep` is EXACTLY 10 — NeMo's default. Higher risks
 //     catastrophic stutter on noise; lower truncates legitimate consonant
 //     clusters. NOT a knob.
@@ -44,13 +44,13 @@ public actor GreedyRNNTDecoder {
     // MARK: - Constants
 
     /// RNN-T blank token id. Hardcoded to the published checkpoint's value;
-    /// NOT a knob (PLAN.md §11 Anti-pattern).
+    /// NOT a knob (anti-pattern).
     public static let blankId: Int32 = 1024
 
     /// Maximum non-blank emits per encoder time step. NeMo's default; the
     /// "stutter safety bound" — without it a misbehaving model can emit the
     /// same non-blank forever and never advance encoder time. EXACTLY 10
-    /// (PLAN.md §11 Anti-pattern: not 8, not 12).
+    /// (anti-pattern: not 8, not 12).
     public static let maxSymbolsPerStep: Int = 10
 
     // MARK: - Dependencies
@@ -219,7 +219,7 @@ public actor GreedyRNNTDecoder {
     /// Clear the utterance-wide accumulator and reset the prediction LSTM at
     /// utterance boundary.
     ///
-    /// Per PLAN.md §4 "Utterance boundary" and Anti-pattern 11: must be called
+    /// Per the utterance-boundary anti-pattern: must be called
     /// alongside `EncoderSession.reset()` on the same boundary — never
     /// independently. The decoder does NOT call `EncoderSession.reset()`
     /// because it doesn't hold a reference to the encoder; that's the

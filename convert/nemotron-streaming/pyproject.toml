@@ -1,14 +1,14 @@
 [project]
 name = "nemotron-convert"
 version = "0.1.0"
-description = "NeMo -> torch.export -> coreai_torch conversion pipeline for nvidia/nemotron-3.5-asr-streaming-0.6b. See ../PLAN.md §3."
+description = "NeMo -> torch.export -> coreai_torch conversion pipeline for nvidia/nemotron-speech-streaming-en-0.6b."
 requires-python = ">=3.11"
 dependencies = [
     "nemo-toolkit[asr]>=2.0",
     "coreai-torch",
     "torch>=2.5,<3.0",
     "numpy",
-    # coreai-optimization  # only needed if Phase 5b triggers per PLAN.md §3 Step 5b
+    # coreai-optimization  # only needed for the --quantize path
 ]
 
 [build-system]

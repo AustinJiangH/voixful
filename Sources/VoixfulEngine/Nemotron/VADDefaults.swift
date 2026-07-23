@@ -1,13 +1,10 @@
 // Shared VAD (Voice Activity Detection) defaults — single source of truth for
-// the energy-based VAD used by the CLI `mic` subcommand and the SwiftUI demo's
-// TranscriptionViewModel. Resolves the Phase-L finding that these values were
-// duplicated across two sites (Sources/NemotronASRCLI/main.swift and
-// Demos/NemotronDemo/Sources/NemotronDemo/TranscriptionViewModel.swift).
+// the energy-based VAD used by the CLI `mic` subcommand (via the shared mic
+// session in VoixfulTUI), kept here so the values live in one place.
 //
-// All values are placeholders per PLAN.md §7 Phase 7 / §10 open question on VAD
-// strategy. Tune once a real mic recording surfaces the miss rate, OR replace
-// the whole energy-based path with a Silero Core AI conversion (PLAN.md §10
-// follow-up).
+// All values are placeholders pending an open question on VAD strategy. Tune
+// once a real mic recording surfaces the miss rate, OR replace the whole
+// energy-based path with a Silero Core AI conversion (follow-up).
 
 import Foundation
 

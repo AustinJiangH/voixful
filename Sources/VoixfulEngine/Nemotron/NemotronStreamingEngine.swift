@@ -4,7 +4,7 @@
 // the four sessions (encoder, prediction, joiner, mel extractor + tokenizer)
 // and the small per-utterance buffers that glue them together.
 //
-// Public API — exactly four methods, matching PLAN.md §6 "Public API sketch":
+// Public API — exactly four methods:
 //
 //   public init(modelURL: URL, language: Language = .enUS, chunkSize: ChunkSize = .ms320) async throws
 //   public func start() async
@@ -14,7 +14,7 @@
 // No other methods are public. Internal state (mel/audio buffers, emitted
 // token accumulator, the language one-hot NDArray) is accessible only via
 // these four entry points so callers can't accidentally desync the cache
-// state across the four sessions (Anti-pattern 11 in PLAN.md §11).
+// state across the four sessions (anti-pattern).
 //
 // Lifecycle:
 //   1. `init(...)` loads the `.aimodel` once, builds the four sessions and
@@ -33,7 +33,7 @@
 //
 // chunkSize is stored at init; the encoder does NOT take it as an input
 // (`att_context_size` is baked into the model — but if convert.py exports a
-// dynamic-shape model per PLAN.md §10's open question, chunkSize only affects
+// dynamic-shape model per the open question, chunkSize only affects
 // how many mel frames we accumulate before invoking the encoder).
 
 import CoreAI
@@ -83,7 +83,7 @@ public actor NemotronStreamingEngine {
     ///
     /// VERIFY: whether passing audio through this intermediate buffer and ALSO
     /// letting `MelExtractor.extractStreaming` keep its own carryover is
-    /// double-buffering. PLAN.md §5 / Phase C review notes that the mel
+    /// double-buffering. The Phase C review notes that the mel
     /// extractor's streaming carryover holds the windowSize-hopSize overlap
     /// (~240 samples). Phase 1 may simplify this to "audioBuffer holds
     /// nothing; pass directly to extractStreaming" once the mel extractor's
@@ -120,7 +120,7 @@ public actor NemotronStreamingEngine {
 
     // MARK: - Mel preprocessor constants
 
-    /// Mel bins. Mirrored from `MelExtractor`'s default (128 per PLAN.md §5).
+    /// Mel bins. Mirrored from `MelExtractor`'s default (128).
     /// Stored locally so we don't `await` into the mel extractor actor every
     /// time we need to repack frames into the encoder's `[1, 128, T]` shape.
     private static let nMels: Int = 128
@@ -140,10 +140,10 @@ public actor NemotronStreamingEngine {
     ///     produced by `convert/nemotron_convert/convert.py`. The vocabulary
     ///     file is expected as a sibling named `vocab.txt` (see VERIFY below).
     ///   - language: Target locale for transcription. Drives the prompt-kernel
-    ///     language conditioning via a 128-dim one-hot vector (PLAN.md §2).
+    ///     language conditioning via a 128-dim one-hot vector.
     ///     Defaults to `.enUS`.
-    ///   - chunkSize: Cache-aware streaming chunk size (PLAN.md §2's
-    ///     "Chunk-size dial"). Defaults to `.ms320` per PLAN.md §9 Decision 9.
+    ///   - chunkSize: Cache-aware streaming chunk size (the
+    ///     "Chunk-size dial"). Defaults to `.ms320`.
     /// - Throws: `ASRError.modelLoadFailed` if the `.aimodel` cannot be
     ///   loaded; `ASRError.missingFunction` if any of the three required
     ///   inference functions ("encode", "predict_step", "join") are missing.
@@ -159,9 +159,9 @@ public actor NemotronStreamingEngine {
         // share this model instance; each one loads its named function.
         //
         // VERIFY: Core AI API surface — `AIModel(contentsOf:)` is the
-        // initializer shown in PLAN.md §6 "Model loading". Whether it's
+        // model-loading initializer. Whether it's
         // `async throws` or `throws`-only is unconfirmed against Xcode 27 SDK;
-        // PLAN.md §6 uses `try await AIModel(contentsOf:)` so we mirror that.
+        // the reference uses `try await AIModel(contentsOf:)` so we mirror that.
         // If the SDK turns out to be sync, remove the `await` here AND in
         // any error path that bridges to ASRError.modelLoadFailed.
         // Use AIModelCache with .persistent policy so the device-specific
@@ -242,15 +242,15 @@ public actor NemotronStreamingEngine {
             cpu: CPUTransducerDecoder(sidecarFor: modelURL)
         )
 
-        // Build the mel extractor with PLAN.md §5 defaults (16 kHz, 128 mels,
+        // Build the mel extractor with default settings (16 kHz, 128 mels,
         // 400-sample window, 160-sample hop, 512-point FFT, Slaney mel scale).
         self.melExtractor = MelExtractor()
 
         // Build the tokenizer. The vocab artifact is expected as a sibling of
         // the .aimodel file.
         //
-        // VERIFY: vocab artifact convention. PLAN.md doesn't lock in the
-        // distribution shape for the SentencePiece vocab — it could be:
+        // VERIFY: vocab artifact convention. The distribution shape for the
+        // SentencePiece vocab isn't locked in — it could be:
         //   1. A sibling `vocab.txt` (what we assume here)
         //   2. A sibling `tokenizer.model` (SentencePiece binary)
         //   3. Bundled inside the .aimodel as an asset (Core AI assets
@@ -279,7 +279,7 @@ public actor NemotronStreamingEngine {
     /// Reset all session state to a fresh utterance.
     ///
     /// Calls `reset()` on the encoder, prediction, decoder, and mel extractor
-    /// in one transaction — per PLAN.md §4 / Anti-pattern 11, all caches reset
+    /// in one transaction — per the reset anti-pattern, all caches reset
     /// together, never partially. Also clears the per-utterance audio buffer,
     /// mel buffer, and emitted-token accumulator, and records the session
     /// start timestamp for partial-hypothesis time-stamping.
@@ -345,7 +345,7 @@ public actor NemotronStreamingEngine {
     ///     one `PartialHypothesis`.
     ///
     /// The audio MUST be 16 kHz mono Float — this is the rate the mel
-    /// preprocessor was tuned for in PLAN.md §5. Sample-rate conversion,
+    /// preprocessor was tuned for. Sample-rate conversion,
     /// channel-down-mixing, and integer→float conversion happen in the
     /// caller (e.g., the CLI's AVAudioEngine plumbing in Phase 7).
     ///
@@ -445,8 +445,8 @@ public actor NemotronStreamingEngine {
             // reads as a growing utterance, matching the "live captioning"
             // UX expectation of the partial-hypothesis API.
             //
-            // VERIFY: PartialHypothesis API contract — PLAN.md §6 doesn't
-            // pin down whether `text` is incremental ("new tokens only") or
+            // VERIFY: PartialHypothesis API contract — it isn't pinned down
+            // whether `text` is incremental ("new tokens only") or
             // cumulative ("utterance-so-far"). The current Phase D
             // PartialHypothesis doc-comment at Types.swift:43-49 says
             // "current best-effort transcription text", which reads as
@@ -463,11 +463,11 @@ public actor NemotronStreamingEngine {
             // encoder pass once it sees that right context as "current".
             //
             // VERIFY: the stable/unstable split needs the chunk-aware
-            // FastConformer's right-context semantics. PLAN.md §2 says the
+            // FastConformer's right-context semantics. The
             // right-context window is included in the chunk; whether THIS
             // call's emitted tokens at the right-context boundary can be
             // revised by the next call is an open question. Phase 7's
-            // microphone demo (PLAN.md §7) will exercise this; a
+            // microphone demo will exercise this; a
             // conservative placeholder is to mark all tokens up to
             // `allEmittedTokens.count - newTokens.count` as stable.
             let stableUntil = allEmittedTokens.count - newTokens.count
@@ -504,7 +504,7 @@ public actor NemotronStreamingEngine {
     /// streaming mel path (no preemph-across-call carryover, no per-call
     /// reflect-pad gaps) by running the non-streaming `extract(samples:)` once
     /// on the whole audio buffer, then driving the encoder/decoder in
-    /// 128-frame chunks. Use this for `nemotron-asr file` where the audio
+    /// 128-frame chunks. Use this for `voixful transcribe` where the audio
     /// length is known up front; for live mic use `feed(...)` + `finish()`.
     /// Per-stage wall-clock counters (ms). Populated by `transcribe(audio:)`
     /// every call. Reset on `start()`. Read by callers to print breakdowns.
@@ -703,8 +703,8 @@ public actor NemotronStreamingEngine {
         // If we have any leftover mel frames (< framesPerChunk), pad them
         // with zeros to a full chunk and run the encoder one last time.
         //
-        // VERIFY: right-context padding for the final chunk. PLAN.md §2 says
-        // the right-context frames are part of the chunk; for the final
+        // VERIFY: right-context padding for the final chunk. The
+        // right-context frames are part of the chunk; for the final
         // chunk we won't have future audio, so we pad with zeros (silence).
         // Whether this matches NeMo's reference end-of-utterance handling is
         // an open question — Phase 1 / Phase 5 WER eval will surface any
@@ -762,7 +762,7 @@ public actor NemotronStreamingEngine {
         // is already fixed (Types.swift `Transcript.Segment`) so callers
         // don't break when we wire it in.
         //
-        // VERIFY: segment time-alignment. PLAN.md §6 doesn't pin down how
+        // VERIFY: segment time-alignment. It isn't pinned down how
         // RNN-T greedy decoding tracks per-token timing; the natural
         // approach is to track the (t, chunk) coordinate at which each
         // non-blank was emitted in `GreedyRNNTDecoder.decode(...)` and

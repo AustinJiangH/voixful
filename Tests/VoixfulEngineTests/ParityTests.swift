@@ -1,9 +1,9 @@
-// Phase H — End-to-end WER parity gate per PLAN.md §7 Phase 5.
+// End-to-end WER parity gate.
 //
 // Loads the `.aimodel` from the fixtures directory and runs `NemotronStreamingEngine`
 // against the LibriSpeech test-clean split, then compares the measured WER
-// against the reference value recorded in PLAN.md Phase 1. Tolerance is
-// ±0.5 percentage points per PLAN.md §0 ("done" criteria) and §7 Phase 5.
+// against the recorded reference value. Tolerance is ±0.5 percentage points
+// per the "done" criteria.
 //
 // This is the highest-stakes test in the suite — it's the gate that says
 // "the Swift end-to-end path matches what NeMo would produce." Everything
@@ -46,24 +46,24 @@ final class ParityTests: XCTestCase {
     // MARK: - Reference WER
 
     /// LibriSpeech test-clean reference WER, as measured by NeMo's published
-    /// streaming inference example on the `nvidia/nemotron-3.5-asr-streaming-0.6b`
+    /// streaming inference example on the `nvidia/nemotron-speech-streaming-en-0.6b`
     /// checkpoint at `att_context_size = [56, 3]` (320 ms chunk).
     ///
-    /// PLAN.md §7 Phase 1 task: "Run NeMo's published streaming inference
+    /// Reference measurement task: run NeMo's published streaming inference
     /// example (`speech_to_text_cache_aware_streaming_infer.py`) on LibriSpeech
-    /// test-clean. Record reference WER for English." That task hasn't run yet
-    /// (no env, no weights). The value below is a plausible placeholder based
-    /// on the published model card claims for streaming 0.6B at 320 ms; it
-    /// MUST be replaced with the measured value once Phase 1 completes.
+    /// test-clean and record the reference WER for English. That task hasn't
+    /// run yet (no env, no weights). The value below is a plausible placeholder
+    /// based on the published model card claims for streaming 0.6B at 320 ms;
+    /// it MUST be replaced with the measured value.
     ///
-    /// VERIFY: this is a placeholder. Replace with the value Phase 1 measures
-    /// before declaring the gate meaningful. Until then, the test will skip
+    /// VERIFY: this is a placeholder. Replace with the measured value before
+    /// declaring the gate meaningful. Until then, the test will skip
     /// (env var likely also unset), so leaving the placeholder in does not
     /// produce false greens.
-    static let referenceWERPercent: Double = 7.0  // PLAN.md §7 Phase 1 task — update with measured value
+    static let referenceWERPercent: Double = 7.0  // placeholder — update with measured value
 
-    /// Tolerance on the WER gate, in percentage points. PLAN.md §0 ("done")
-    /// and §7 Phase 5 both say ±0.5 pp.
+    /// Tolerance on the WER gate, in percentage points. The "done" criteria
+    /// say ±0.5 pp.
     static let werTolerancePP: Double = 0.5
 
     // MARK: - The gate
@@ -111,8 +111,8 @@ final class ParityTests: XCTestCase {
         }
 
         // Construct NemotronStreamingEngine exactly as the CLI does. Chunk size 320 ms
-        // is the PLAN.md §9 Decision 9 default and the chunk size at which
-        // the reference WER above was measured.
+        // is the default and the chunk size at which the reference WER above
+        // was measured.
         let asr: NemotronStreamingEngine
         do {
             asr = try await NemotronStreamingEngine(
@@ -191,7 +191,7 @@ final class ParityTests: XCTestCase {
         XCTAssertLessThanOrEqual(
             delta,
             Self.werTolerancePP,
-            "measured WER \(measuredWER)% diverges from reference \(Self.referenceWERPercent)% by \(delta) pp (tolerance \(Self.werTolerancePP) pp) — see PLAN.md §7 Phase 5"
+            "measured WER \(measuredWER)% diverges from reference \(Self.referenceWERPercent)% by \(delta) pp (tolerance \(Self.werTolerancePP) pp)"
         )
         #endif
     }
@@ -270,7 +270,6 @@ final class ParityTests: XCTestCase {
     /// (e.g., expanding contractions, normalizing numerals) that this does
     /// not. If the WER gate fails by a margin consistent with normalization
     /// drift rather than model drift, mirror NeMo's exact normalization here.
-    /// See PLAN.md §7 Phase 1.
     static func normalizeWords(_ text: String) -> [String] {
         let lowered = text.lowercased()
         let punctuation: Set<Character> = [

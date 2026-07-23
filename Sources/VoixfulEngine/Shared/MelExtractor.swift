@@ -1,6 +1,5 @@
 // Phase C — Mel preprocessor (Accelerate / vDSP).
-// See PLAN.md §5 for the full algorithm and §5 "parity test" for the gate this targets.
-// This is the Swift+Accelerate fallback (PLAN.md §5 Branch C). Phase 4 decides whether
+// This is the Swift+Accelerate fallback (Branch C). A later phase decides whether
 // Branches A (in-graph) or B (TorchMetalKernel) supersede it; until then this is the
 // source of truth for "what mel features the encoder sees."
 
@@ -37,7 +36,7 @@ public actor MelExtractor {
     /// Hann window of length `windowSize` (vDSP_HANN_NORM convention).
     private let hannWindow: [Float]
     /// Slaney-style triangular mel filterbank, row-major `[nMels × (fftSize/2 + 1)]`.
-    /// NOTE: Slaney mel scale, not HTK — see PLAN.md §5. Librosa's `librosa.filters.mel`
+    /// NOTE: Slaney mel scale, not HTK. Librosa's `librosa.filters.mel`
     /// with `htk=False, norm='slaney'` is the reference.
     private let melFilterbank: [Float]
     /// fftSize/2 + 1, the count of non-redundant real-FFT bins.
@@ -311,7 +310,7 @@ public actor MelExtractor {
                 // absorbed by the log + normalization so we don't compensate here.
                 // VERIFY: NeMo's preprocessor applies a 1/N normalization on the magnitude
                 // squared (librosa default). If parity drift shows a constant log offset,
-                // multiply powerSpectrum by 1.0 / Float(fftSize * fftSize). See PLAN.md §5.
+                // multiply powerSpectrum by 1.0 / Float(fftSize * fftSize).
                 var midPower = [Float](repeating: 0, count: half)
                 vDSP_zvmags(&split, 1, &midPower, 1, vDSP_Length(half))
 
@@ -345,8 +344,8 @@ public actor MelExtractor {
         }
 
         // 4) log(x + 2^-24), elementwise. NeMo's FilterbankFeatures uses
-        // log_zero_guard_value = 2**(-24) ≈ 5.96e-8, not the 1e-5 PLAN.md
-        // wrote down. The smaller offset matters: it controls the log floor
+        // log_zero_guard_value = 2**(-24) ≈ 5.96e-8, not 1e-5 as
+        // initially assumed. The smaller offset matters: it controls the log floor
         // for near-silent frames. With 1e-5 our mel values landed in roughly
         // [-12, 0]; the reference is closer to [-16.6, 0.7]. Aligning the
         // offset brings them into the same range.
@@ -358,7 +357,7 @@ public actor MelExtractor {
 
     // MARK: - Running per-feature normalization (Welford)
     // VERIFY: confirm normalization mode (per_feature vs all_features, fixed vs running
-    // estimator) against PLAN.md §10 open question — Phase 1 task. NeMo's
+    // estimator) (open question). NeMo's
     // `AudioToMelSpectrogramPreprocessor` supports both `per_feature` and `all_features`;
     // streaming likely wants a windowed running estimator over the last ~3 s, not a
     // global accumulator. The Welford form below is a global running estimator and is a

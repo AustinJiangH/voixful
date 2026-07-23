@@ -1,11 +1,11 @@
 // Phase F — 128-dim one-hot language ID construction.
 //
 // The cache-aware FastConformer encoder takes a 128-dim language one-hot as
-// its second input (`lang_id` per `convert/nemotron_convert/convert.py` and
-// PLAN.md §2 / §4). The published checkpoint allocates 128 slots for
+// its second input (`lang_id` per `convert/nemotron_convert/convert.py`).
+// The published checkpoint allocates 128 slots for
 // language conditioning — that's the prompt-kernel dimensionality, not a
 // per-language count. 40 of those slots are populated with the supported
-// locales (PLAN.md §2 / Types.swift Language enum); the remaining 88 are
+// locales (Types.swift Language enum); the remaining 88 are
 // unused capacity reserved for future locales.
 //
 // `LangID` is intentionally stateless: there is one canonical mapping from
@@ -20,7 +20,7 @@ import Foundation
 /// encoder's prompt-kernel consumes.
 public struct LangID: Sendable {
 
-    /// Prompt-kernel input dimensionality. Hardcoded to 128 per PLAN.md §2;
+    /// Prompt-kernel input dimensionality. Hardcoded to 128;
     /// this is the published checkpoint's value and NOT a knob.
     public static let dim: Int = 128
 
@@ -34,23 +34,23 @@ public struct LangID: Sendable {
     /// slot.
     ///
     /// VERIFY: confirm 128-dim one-hot encoding matches NeMo's prompt-kernel
-    /// input expectation (PLAN.md §10 open question). The unknowns are:
+    /// input expectation (open question). The unknowns are:
     ///   1. Does the model want `[128]` or `[1, 128]` (broadcast over batch)?
     ///      EncoderSession.forward passes whatever this returns directly to
     ///      `inputs: ["lang_id": langId]`; the encoder graph was exported with
     ///      `example_lang` of a specific shape (see
-    ///      convert/nemotron_convert/convert.py and the §3 Step 3 sketch).
+    ///      convert/nemotron_convert/convert.py).
     ///      If the exported graph wants `[1, 128]`, change the shape literal
     ///      below and the matching `example_lang` in convert.py together.
     ///   2. Is the canonical lang→slot mapping the `Language` declaration order
     ///      (what we use here), or is there a published NeMo lookup table that
     ///      assigns slot indices independently of any Swift-side enum order?
-    ///      Phase 1's `.nemo` config inspection (PLAN.md §7 Phase 1) is the
+    ///      Phase 1's `.nemo` config inspection is the
     ///      source of truth; if NeMo's table differs, write a mapping function
     ///      that takes `Language` → `Int` instead of relying on
     ///      `allCases.firstIndex(of:)`, and keep this method's body symmetric
     ///      with `verify_parity.py:_lang_id_one_hot` in convert/.
-    ///   3. The 13 broad-coverage and 8 adaptation-ready locales (PLAN.md §2)
+    ///   3. The 13 broad-coverage and 8 adaptation-ready locales
     ///      may share slots with their nearest transcription-ready locale
     ///      (e.g., nb-NO might use the same slot as nn-NO) rather than each
     ///      having its own; if so, this function needs a coalescing table.
@@ -69,7 +69,7 @@ public struct LangID: Sendable {
         // model's prompt-kernel input expectation.
         //
         // VERIFY: Core AI API surface — `NDArray(shape:scalarType:)` initializer
-        // and `.float32` scalar-type spelling per PLAN.md §4 snippet. Same
+        // and `.float32` scalar-type spelling. Same
         // accessor pattern as EncoderSession/PredictionSession. `var` (not
         // `let`) because we mutate via `mutableView()` below — same convention
         // as EncoderSession's cache buffers at EncoderSession.swift:34-52.

@@ -28,8 +28,7 @@ extension NDArray {
 
     /// Zero every Float32 element, in place. Used at utterance boundaries to
     /// reset stateful caches without reallocating the backing buffer (which
-    /// would invalidate the existing `MutableViews` registration — see
-    /// PLAN.md §11 Anti-pattern 4).
+    /// would invalidate the existing `MutableViews` registration).
     mutating func zeroFloat32() {
         let count = self.elementCount
         var mv = self.mutableView(as: Float.self)

@@ -1,5 +1,5 @@
-// Phase H — Unit tests for the `Language` enum and `LangID.oneHot(...)` helper
-// from PLAN.md §2 (40 locales) and §3 (128-dim prompt-kernel one-hot).
+// Unit tests for the `Language` enum (40 locales) and `LangID.oneHot(...)`
+// helper (128-dim prompt-kernel one-hot).
 //
 // No external fixtures: these tests run unconditionally on every `swift test`
 // invocation. They guard the 40-locale invariant, the BCP-47-style raw-value
@@ -23,19 +23,19 @@ final class LanguageTests: XCTestCase {
 
     // MARK: - Cardinality
 
-    /// PLAN.md §2 lists exactly 40 supported locales (19 transcription-ready +
+    /// There are exactly 40 supported locales (19 transcription-ready +
     /// 13 broad-coverage + 8 adaptation-ready). Adding or removing a case
-    /// without updating PLAN.md is a bug.
+    /// is a deliberate change.
     func testLanguageCount() {
         XCTAssertEqual(Language.allCases.count, 40,
-                       "Language.allCases.count must be 40 per PLAN.md §2 (got \(Language.allCases.count))")
+                       "Language.allCases.count must be 40 (got \(Language.allCases.count))")
     }
 
     // MARK: - Raw value formatting
 
-    /// Spot-check that `rawValue` uses the BCP-47-style `<lang>-<region>` form
-    /// PLAN.md §3 documents. The hyphen between language and region (NOT an
-    /// underscore) matters because the vocab's `<en-US>`-style lang tags are
+    /// Spot-check that `rawValue` uses the BCP-47-style `<lang>-<region>` form.
+    /// The hyphen between language and region (NOT an underscore) matters
+    /// because the vocab's `<en-US>`-style lang tags are
     /// matched against `Tokenizer.langTagPattern` (`^<[a-z]{2}-[A-Z]{2}>$`).
     func testLanguageRawValues() {
         XCTAssertEqual(Language.enUS.rawValue, "en-US")
@@ -49,9 +49,9 @@ final class LanguageTests: XCTestCase {
 
     /// Every Language's rawValue matches the BCP-47-style pattern
     /// `^[a-z]{2}-[A-Z]{2}$` — two lowercase letters, dash, two uppercase
-    /// letters. This is the form Nemotron's vocab tags use (PLAN.md §3) and
-    /// the form `Tokenizer.isLangTag(...)` matches against (with the angle
-    /// brackets added).
+    /// letters. This is the form Nemotron's vocab tags use and the form
+    /// `Tokenizer.isLangTag(...)` matches against (with the angle brackets
+    /// added).
     func testAllLanguagesMatchPattern() {
         let pattern = #"^[a-z]{2}-[A-Z]{2}$"#
         for lang in Language.allCases {
@@ -88,21 +88,21 @@ final class LanguageTests: XCTestCase {
     /// `allCases.firstIndex(of:)` as the canonical mapping.
     ///
     /// VERIFY: this assumes the NeMo prompt-kernel slot order matches the
-    /// Swift `Language` enum declaration order. PLAN.md §10 / LangID.swift
-    /// VERIFY (2) flags this as Phase 1 work — once the NeMo lookup table is
-    /// confirmed, either reorder the enum or add an explicit mapping.
+    /// Swift `Language` enum declaration order. The LangID.swift VERIFY (2)
+    /// flags this too — once the NeMo lookup table is confirmed, either
+    /// reorder the enum or add an explicit mapping.
     func testLangIDOneHot() throws {
         let oneHot = LangID.oneHot(.enUS)
 
-        // VERIFY: NDArray.shape accessor name per PLAN.md §4 — could also be
-        // `.dimensions` or unwrap differently. If the SDK exposes it as
-        // `[Int]` directly this works; if it's a `Shape` struct, adapt.
+        // VERIFY: NDArray.shape accessor name — could also be `.dimensions`
+        // or unwrap differently. If the SDK exposes it as `[Int]` directly
+        // this works; if it's a `Shape` struct, adapt.
         let shape = oneHot.shape
         XCTAssertEqual(shape.count, 1,
-                       "LangID.oneHot returns rank-1; PLAN.md §3 hypothesizes [128] (vs [1, 128])")
+                       "LangID.oneHot returns rank-1 [128] (vs [1, 128])")
         XCTAssertEqual(shape.first, LangID.dim,
                        "LangID.oneHot's dim must be \(LangID.dim) (got \(shape.first ?? -1))")
-        XCTAssertEqual(LangID.dim, 128, "LangID.dim must equal 128 per PLAN.md §2")
+        XCTAssertEqual(LangID.dim, 128, "LangID.dim must equal 128")
 
         // Read the buffer and verify the one-hot pattern. Uses the
         // `flatFloat32()` helper from NDArrayHelpers.swift (which wraps the

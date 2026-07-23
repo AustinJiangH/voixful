@@ -1,4 +1,4 @@
-// Phase C — Mel parity gate. See PLAN.md §5 "The parity test (regardless of approach)".
+// Mel parity gate.
 // Loads a fixture WAV + a NeMo-generated reference [128 × T] float32 blob and asserts
 // max-abs / mean-abs deltas. Fixtures live under Tests/VoixfulEngineTests/fixtures/;
 // see fixtures/README.md for the generation recipe.
@@ -11,9 +11,9 @@ import AVFoundation
 final class MelParityTests: XCTestCase {
 
     func testMelMatchesNemoReference() async throws {
-        // Phase-A reviewer noted Bundle.module requires a `resources:` block on the
-        // test target in Package.swift; with no fixtures committed yet that block
-        // is unnecessary, so we always resolve via the #filePath fallback. If
+        // Bundle.module requires a `resources:` block on the test target in
+        // Package.swift; with no fixtures committed yet that block is
+        // unnecessary, so we always resolve via the #filePath fallback. If
         // fixtures are added later AND Package.swift is amended to copy them in,
         // either path stays correct.
         let wavURL = Self.fallbackFixturesDir().appendingPathComponent("sample.wav")
@@ -52,7 +52,7 @@ final class MelParityTests: XCTestCase {
 
     /// Bundle.module isn't always populated when fixtures aren't declared as resources
     /// in Package.swift; this fallback resolves to Tests/VoixfulEngineTests/fixtures/
-    /// relative to the test source file. VERIFY: once Phase H wires resources into
+    /// relative to the test source file. VERIFY: once resources are wired into
     /// Package.swift via `resources: [.copy("fixtures")]`, this fallback becomes dead code.
     private static func fallbackFixturesDir() -> URL {
         // #filePath points at this file in DEBUG; resolve siblings.

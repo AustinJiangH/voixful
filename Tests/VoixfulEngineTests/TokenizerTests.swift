@@ -1,16 +1,14 @@
-// Phase H — Tokenizer round-trip and lang-tag-stripping tests.
+// Tokenizer round-trip and lang-tag-stripping tests.
 //
-// Tokenizer is in stub mode until the SentencePiece dependency is wired up
-// (PLAN.md §12 Resources, Phase E follow-up), so round-trip tests have two
-// shapes:
+// Tokenizer is in stub mode until the SentencePiece dependency is wired up,
+// so round-trip tests have two shapes:
 //
 //   1. With a vocab fixture present, the line-per-token best-effort decode
 //      path is exercised: it should produce non-empty output for known
 //      token ids and apply the SentencePiece `▁` → space substitution.
 //      Round-trip from `[Int32]` → text → expectation.
 //   2. The `isLangTag(...)` regex check runs unconditionally — it doesn't
-//      depend on a loaded vocab. The pattern is documented in PLAN.md §3
-//      (`<en-US>`-style tags).
+//      depend on a loaded vocab. The pattern matches `<en-US>`-style tags.
 //
 // When the SentencePiece library lands and the stub-mode fallback in
 // Tokenizer.swift is deleted, this file's "with vocab" tests will need to be
@@ -25,13 +23,12 @@ final class TokenizerTests: XCTestCase {
 
     // MARK: - Lang-tag stripping (no fixture)
 
-    /// `Tokenizer.isLangTag` must accept the canonical `<lang-Region>` form
-    /// documented in PLAN.md §3 — two lowercase letters, dash, two uppercase
-    /// letters, inside angle brackets. Spot-check a representative locale
-    /// from each Language tier.
+    /// `Tokenizer.isLangTag` must accept the canonical `<lang-Region>` form —
+    /// two lowercase letters, dash, two uppercase letters, inside angle
+    /// brackets. Spot-check a representative locale from each Language tier.
     func testLangTagPatternMatches() {
         XCTAssertTrue(Tokenizer.isLangTag("<en-US>"),
-                      "<en-US> must match the lang-tag pattern from PLAN.md §3")
+                      "<en-US> must match the lang-tag pattern")
         XCTAssertTrue(Tokenizer.isLangTag("<es-ES>"),
                       "<es-ES> must match")
         XCTAssertTrue(Tokenizer.isLangTag("<zh-CN>"),
@@ -53,9 +50,9 @@ final class TokenizerTests: XCTestCase {
         XCTAssertFalse(Tokenizer.isLangTag("<en-us>"),
                        "region code must be uppercase")
         XCTAssertFalse(Tokenizer.isLangTag("<en>"),
-                       "PLAN.md §3 pattern requires the region suffix — short forms not covered")
+                       "pattern requires the region suffix — short forms not covered")
         XCTAssertFalse(Tokenizer.isLangTag("<eng-USA>"),
-                       "PLAN.md §3 pattern requires 2-letter codes — 3-letter ISO 639-2 not covered")
+                       "pattern requires 2-letter codes — 3-letter ISO 639-2 not covered")
         XCTAssertFalse(Tokenizer.isLangTag("hello"),
                        "ordinary word must not match")
         XCTAssertFalse(Tokenizer.isLangTag(""),

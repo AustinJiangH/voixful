@@ -1,7 +1,7 @@
 // Phase D / Phase E — Core AI session actor for the RNN-T prediction network.
 //
 // Wraps the "predict_step" inference function from `nemotron-streaming.aimodel`.
-// The prediction network is a 2-layer LSTM with `pred_hidden = 640` (PLAN.md §2).
+// The prediction network is a 2-layer LSTM with `pred_hidden = 640`.
 // Its hidden and cell states are the only state this session owns; they are
 // allocated once and updated in place by Core AI via `MutableViews` on every
 // `step(...)`.
@@ -48,11 +48,11 @@ public actor PredictionSession {
     //
     // The last embedding produced by `step(token:)` — or a zero buffer at start
     // of utterance / after `reset()`. The greedy RNN-T decoder reads this on
-    // every joiner step (PLAN.md §6 inner loop) without advancing the LSTM,
+    // every joiner step (inner loop) without advancing the LSTM,
     // because the joiner sees one (enc_step, pred_emb) pair per try and only
     // a non-blank emit causes us to call `step(...)` and overwrite this.
     //
-    // VERIFY: pred embedding shape. PLAN.md §2 says `pred_hidden = 640` and the
+    // VERIFY: pred embedding shape. `pred_hidden = 640` and the
     // PyTorch wrapper in convert/nemotron_convert/models.py is the source of
     // truth for whether the output is `[1, 640]`, `[1, 1, 640]`, or something
     // else. The joiner doc comment in JoinerSession.swift says `[1, 1, 640]`,
@@ -70,10 +70,10 @@ public actor PredictionSession {
     // MARK: Per-call scratch buffer
     //
     // The decoder calls `step(token:)` once per emitted non-blank token. Per
-    // PLAN.md §11 Anti-pattern 4 ("don't allocate a fresh NDArray each chunk"),
+    // the anti-pattern "don't allocate a fresh NDArray each chunk",
     // hoist the 1-element prev_token buffer to actor-scoped storage so we
     // overwrite a single allocation rather than churning the allocator on every
-    // greedy step. Phase D's review log called this out explicitly.
+    // greedy step.
 
     /// Scratch buffer for the `prev_token` input. Shape `[1]` int32.
     /// Overwritten with the new token id at the top of every `step(token:)`.
@@ -89,10 +89,10 @@ public actor PredictionSession {
         self.function = fn
 
         // Allocate LSTM state buffers exactly once. Reused across every
-        // `step(...)` via MutableViews — Anti-pattern 4 in PLAN.md §11.
+        // `step(...)` via MutableViews.
         //
         // VERIFY: Core AI API surface — NDArray(shape:scalarType:) initializer
-        // and .float32 scalar-type spelling per PLAN.md §4 snippet.
+        // and .float32 scalar-type spelling.
         self.lstmH = NDArray(shape: [2, 1, 640], scalarType: .float32)
         self.lstmC = NDArray(shape: [2, 1, 640], scalarType: .float32)
 
@@ -127,7 +127,7 @@ public actor PredictionSession {
     /// cell states in place AND overwrites `lastEmbedding` with the new
     /// embedding so the next joiner step sees the post-emit pred output.
     ///
-    /// Called inside the RNN-T greedy decode loop (PLAN.md §6) every time the
+    /// Called inside the RNN-T greedy decode loop every time the
     /// joiner emits a non-blank symbol.
     ///
     /// - Parameter token: The previously emitted non-blank token id.
@@ -168,7 +168,7 @@ public actor PredictionSession {
     /// Zero the LSTM hidden and cell states AND the cached embedding at
     /// utterance boundary.
     ///
-    /// Per PLAN.md §4 "Utterance boundary" and Anti-pattern 11: must be called
+    /// Per the "Utterance boundary" anti-pattern: must be called
     /// at the same instant the encoder caches are reset, never independently.
     public func reset() async {
         // Resolves the Phase-D VERIFY: SDK 27.0 uses

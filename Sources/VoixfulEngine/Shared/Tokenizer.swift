@@ -26,8 +26,6 @@
 // one-shot warning so the absence is loud at first run but not noisy. When
 // the dependency is wired up, the body of `decode(...)` swaps out for the
 // real library call without changing the public API.
-//
-// See PLAN.md §12 Resources for the candidate libraries to evaluate.
 
 import Foundation
 import os.log
@@ -42,7 +40,7 @@ public actor Tokenizer {
 
     /// Token-id → piece-string mapping, built from the vocab file.
     ///
-    /// VERIFY: vocab file format. Two candidates from PLAN.md and NeMo
+    /// VERIFY: vocab file format. Two candidates by NeMo
     /// convention:
     ///   1. SentencePiece `.model` (protobuf binary) — would require the
     ///      SentencePiece runtime to load; we can NOT parse this in pure
@@ -66,11 +64,11 @@ public actor Tokenizer {
     var hasWarnedStubMode: Bool
 
     /// Regex used by `stripLangTags` to recognize tokens like `<en-US>`,
-    /// `<es-ES>`, etc. Per PLAN.md §3 the format is two lowercase + dash +
+    /// `<es-ES>`, etc. The format is two lowercase + dash +
     /// two uppercase letters inside angle brackets.
     ///
-    /// VERIFY: exact lang-tag format in the published vocab. PLAN.md §3
-    /// mentions `<en-US>`-style tags; whether the vocab also contains
+    /// VERIFY: exact lang-tag format in the published vocab. The
+    /// `<en-US>`-style tags are expected; whether the vocab also contains
     /// `<en>` (just the language, no region) or other locale forms is
     /// unconfirmed. Phase 1's vocab dump will tell us.
     static let langTagPattern = #"^<[a-z]{2}-[A-Z]{2}>$"#
@@ -136,14 +134,13 @@ public actor Tokenizer {
     ///     `GreedyRNNTDecoder.decode(...)`. Should NOT contain the blank id
     ///     (13087); if it does, that entry is skipped.
     ///   - stripLangTags: If true, drop tokens whose pieces match
-    ///     `^<[a-z]{2}-[A-Z]{2}>$` (per PLAN.md §3). Useful for surfaces
+    ///     `^<[a-z]{2}-[A-Z]{2}>$`. Useful for surfaces
     ///     that want the raw transcription text without locale markers.
     /// - Returns: Detokenized text. Returns `""` in stub mode (logs a
     ///   one-shot warning on first call); returns a best-effort detokenized
     ///   string from the line-per-token vocab if that path succeeded at init.
     public func decode(tokens: [Int32], stripLangTags: Bool = false) -> String {
         // TODO Phase E follow-up — pick SentencePiece dep at first run.
-        // See PLAN.md Resources.
         //
         // When the SentencePiece library is wired up, the body becomes:
         //
@@ -200,8 +197,8 @@ public actor Tokenizer {
                 VoixfulEngine.Tokenizer is running in stub mode: no SentencePiece \
                 dependency wired up and the vocab file at \(self.vocabURL.path, privacy: .public) \
                 did not parse as a plain-text per-line vocab. decode(...) will \
-                return an empty string until the dependency is added. See PLAN.md \
-                §12 Resources and the TODO in Tokenizer.swift.
+                return an empty string until the dependency is added. See the \
+                TODO in Tokenizer.swift.
                 """
             )
             hasWarnedStubMode = true
@@ -211,10 +208,10 @@ public actor Tokenizer {
 
     // MARK: - Helpers
 
-    /// Returns `true` if `piece` matches the language-tag pattern from
-    /// PLAN.md §3 (e.g., `<en-US>`, `<es-ES>`).
+    /// Returns `true` if `piece` matches the language-tag pattern
+    /// (e.g., `<en-US>`, `<es-ES>`).
     nonisolated static func isLangTag(_ piece: String) -> Bool {
-        // VERIFY: lang tag regex. PLAN.md §3 documents `<en-US>` form; the
+        // VERIFY: lang tag regex. The `<en-US>` form is expected; the
         // pattern below assumes exactly two lowercase + dash + two uppercase
         // letters inside angle brackets. If the vocab also has shorter forms
         // (e.g., `<en>`) or longer ones (e.g., `<zh-Hant-TW>`), widen this.

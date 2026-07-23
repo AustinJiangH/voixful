@@ -1,5 +1,9 @@
 # Voixful
 
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+![Platform: macOS 27+ · Apple Silicon](https://img.shields.io/badge/platform-macOS%2027%2B%20·%20Apple%20Silicon-lightgrey.svg)
+![Swift 6](https://img.shields.io/badge/Swift-6-orange.svg)
+
 A **SpeechAnalyzer-shaped** on-device speech API for Apple Silicon, with local ASR
 backends running through **Core AI** (the WWDC 2026 framework that succeeds Core ML
 for custom models). Mirrors Apple's `SpeechAnalyzer` / `SpeechTranscriber` so
@@ -41,13 +45,28 @@ The Swift package layers them behind one model-agnostic façade:
 - **`VoixfulNemotronStreaming`** / **`VoixfulParakeetTDT`** / **`VoixfulCohereTranscribe`**
   / **`VoixfulGraniteNAR`** / **`VoixfulCanaryQwen`** — thin per-architecture
   façade targets, each exposing a `Transcribing` conformer over its engine.
+- **`VoixfulFullContext`** — the live-mic wrapper for the non-streaming backends
+  (`LiveFullContextTranscriber`): re-transcribes the growing utterance on a
+  throttle and commits at silence gaps, giving Parakeet/Cohere/Granite/Canary a
+  streaming-like `mic` experience.
 - **`VoixfulTUI`** — a reusable live-mic terminal UI (used by the CLI; works for
   any backend).
 - **`VoixfulCLI`** — the `voixful` executable: `transcribe`, `mic`, `languages`.
 - **`convert/`** — the Python pipelines that produce the Core AI `.aimodel` assets
   (upstream checkpoint → `torch.export` → `coreai_torch`), one dir per model, incl.
   **encoder compression**.
-- A SwiftUI demo in `Demos/`.
+
+## Requirements
+
+- **Apple Silicon Mac** (M-series) — the ANE/GPU paths assume it.
+- **macOS 27** or later — Core AI is the WWDC 2026 runtime (`.macOS("27.0")` in
+  `Package.swift`).
+- **Swift 6 toolchain** (Xcode 27 / the matching command-line tools).
+- A converted **`.aimodel`** for at least one backend — download it from Hugging
+  Face (see [Distribution](#distribution)) or build it with `convert/`.
+
+Core AI is pre-release: assets must be exported with **coreai-torch ≥ 0.4.1**
+(0.4.0-era exports fail to load from macOS 27 beta 3 on).
 
 ## Quick start
 
@@ -64,6 +83,74 @@ with `--backend nemotron|parakeet|cohere|granite|canary` if needed.
 The model `.aimodel` is **not** committed (it's gitignored, ~hundreds of MB to
 GBs). Get it from Hugging Face (see [Distribution](#distribution)) or regenerate
 it with `convert/` (see `convert/README.md`).
+
+## Using the Swift API
+
+Add the package as a dependency and import the brand core plus the backend
+target(s) you want:
+
+```swift
+// Package.swift
+dependencies: [
+    .package(url: "https://github.com/AustinJiangH/voixful.git", branch: "main"),
+],
+targets: [
+    .target(name: "MyApp", dependencies: [
+        .product(name: "VoixfulSpeech", package: "voixful"),
+        .product(name: "VoixfulNemotronStreaming", package: "voixful"),
+    ]),
+]
+```
+
+The surface mirrors Apple's `SpeechAnalyzer` / `SpeechTranscriber`: build a
+`Transcribing` module, hand it to a `VoixfulAnalyzer`, feed `AnalyzerInput`
+buffers, and read `TranscriptionResult`s off the module's `results` stream.
+
+```swift
+import VoixfulSpeech
+import VoixfulNemotronStreaming
+
+let transcriber = try NemotronStreamingTranscriber(
+    modelURL: URL(fileURLWithPath: "nemotron-...-palette4.aimodel"),
+    locale: Locale(identifier: "en-US"),
+    mode: .streaming,
+    reportingOptions: [.volatileResults],   // emit partials while you speak
+    attributeOptions: [.audioTimeRange]
+)
+let analyzer = VoixfulAnalyzer(modules: [transcriber])
+
+// Read results concurrently with feeding audio.
+let reader = Task {
+    for try await result in transcriber.results where result.isFinal {
+        print(String(result.text.characters))
+    }
+}
+
+let (inputs, input) = AsyncStream<AnalyzerInput>.makeStream()
+try await analyzer.start(inputSequence: inputs)
+input.yield(AnalyzerInput(buffer: pcmBuffer, bufferStartTime: .zero))
+input.finish()
+try await analyzer.finalizeAndFinishThroughEndOfInput()
+_ = try await reader.value
+```
+
+Every backend conforms to the same `Transcribing` protocol, so switching models
+is a near-mechanical rename — swap `NemotronStreamingTranscriber` for
+`ParakeetTDTTranscriber`, `CohereTranscriber`, `GraniteTranscriber`, or
+`CanaryTranscriber` (each in its own product). Core types live in
+`VoixfulSpeech`: `VoixfulAnalyzer`, the `VoixfulSpeechModule` / `Transcribing`
+protocols, `AnalyzerInput`, `TranscriptionResult`, `ReportingOption`,
+`ResultAttributeOption`. `VoixfulCLI/main.swift` is a full worked example.
+
+## Building & testing
+
+```sh
+swift build -c release          # build the package + the `voixful` CLI
+swift test                      # unit tests (fixture-gated tests XCTSkip when
+                                # the .aimodel / audio fixtures are absent — see
+                                # fixtures/README.md, so a clean checkout passes)
+scripts/verify-backends.sh      # end-to-end smoke across the installed backends
+```
 
 ## Models & compression
 
@@ -122,7 +209,6 @@ voixful/
 ├── LICENSE                     # Apache-2.0 (code only)
 ├── NOTICE                      # attributions (incl. the model-weights split)
 ├── MODEL_CARD.md               # for the Hugging Face model upload
-├── PLAN.md / HANDOFF.md        # design + state
 ├── Sources/
 │   ├── VoixfulSpeech/          # brand core (analyzer + protocols + types)
 │   ├── VoixfulTUI/             # reusable live-mic terminal UI
@@ -132,12 +218,15 @@ voixful/
 │   ├── VoixfulCohereTranscribe/    # CohereTranscriber : Transcribing
 │   ├── VoixfulGraniteNAR/          # GraniteTranscriber : Transcribing
 │   ├── VoixfulCanaryQwen/          # CanaryTranscriber : Transcribing
+│   ├── VoixfulFullContext/         # LiveFullContextTranscriber (live mic for the above)
 │   └── VoixfulCLI/             # `voixful` executable
 ├── convert/                    # model conversion, one dir per model
 │   ├── nemotron-streaming/     # NeMo → coreai_torch → .aimodel (+ --quantize)
 │   ├── parakeet-tdt/           # full-context TDT pipeline
-│   └── cohere-transcribe/      # AED pipeline
-├── Tests/ · scripts/ · Demos/ · fixtures/
+│   ├── cohere-transcribe/      # attention encoder-decoder pipeline
+│   ├── granite-speech/         # CTC + single-pass LLM editor (NAR) pipeline
+│   └── canary-qwen/            # SALM (Conformer + Qwen3) pipeline
+├── Tests/ · scripts/ · fixtures/
 ```
 
 ## Distribution
@@ -147,6 +236,14 @@ voixful/
   built for them (LFS, model cards, versioning). GitHub is poor for >100 MB blobs.
   Publish the `.aimodel` + `pieces.txt` + `MODEL_CARD.md` to an HF model repo and
   have the convert pipeline / a download step fetch it.
+
+## Contributing
+
+Issues and pull requests are welcome. A good first contribution is **a new
+backend**: add a `convert/<model>/` pipeline that emits a `.aimodel`, then a
+matching `Voixful<Model>` target conforming to `Transcribing` — the analyzer only
+knows the protocol, so nothing else changes. See [`CONTRIBUTING.md`](CONTRIBUTING.md)
+for the build/test loop and the backend checklist.
 
 ## License (dual)
 

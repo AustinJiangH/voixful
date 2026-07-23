@@ -36,7 +36,7 @@ public actor JoinerSession {
     ///   - enc: A single encoder time-step slice, shape `[1, 1, d_model]`.
     ///     Caller indexes the full encoder output along the time axis before
     ///     calling — the joiner sees one frame at a time per the RNN-T greedy
-    ///     loop in PLAN.md §6.
+    ///     loop.
     ///   - pred: Prediction network embedding from `PredictionSession.step(...)`,
     ///     shape `[1, 1, pred_hidden=640]`.
     /// - Returns: Vocab logits, shape `[1, 1, 1, vocab=13087]`.
@@ -47,8 +47,7 @@ public actor JoinerSession {
         //
         // VERIFY: Core AI API surface — does `function.run` allow omitting
         // `states:` entirely when there are none, or must we pass an empty
-        // `MutableViews()`? PLAN.md §4's snippet always passes one; keep
-        // symmetric for now.
+        // `MutableViews()`? Keep symmetric for now by always passing one.
         var outputs = try await function.run(
             inputs: ["enc_step": enc, "pred_emb": pred],
             states: InferenceFunction.MutableViews()
@@ -64,7 +63,7 @@ public actor JoinerSession {
 
     /// Find the vocabulary index with the maximum logit value.
     ///
-    /// Used by the greedy RNN-T loop in PLAN.md §6 to pick the next emitted
+    /// Used by the greedy RNN-T loop to pick the next emitted
     /// token. Returns Int32 to match the token-id type expected by
     /// `PredictionSession.step(token:)`.
     ///

@@ -2,8 +2,8 @@
 
 Python pipeline that turns `nvidia/nemotron-speech-streaming-en-0.6b` into a single
 multi-function `.aimodel` containing three named inference functions: `encode`,
-`predict_step`, and `join`. See `../PLAN.md` §3 for the full design rationale and §10
-for the open questions that the `VERIFY` comments throughout this package track.
+`predict_step`, and `join`. The `VERIFY` comments throughout this package track the
+remaining open questions.
 
 ## Install
 
@@ -26,9 +26,8 @@ source .venv/bin/activate
 pip install --pre -e .
 ```
 
-Resolves the PLAN.md §10 open question 1: NeMo 26.06 and `coreai-torch` 0.4.0
-both run cleanly on the same PyTorch 2.11.0 / Python 3.12 install — no two-env
-workaround required. Python 3.13/3.14 wheels for several NeMo deps are spotty
+NeMo 26.06 and `coreai-torch` 0.4.0 both run cleanly on the same
+PyTorch 2.11.0 / Python 3.12 install — no two-env workaround required. Python 3.13/3.14 wheels for several NeMo deps are spotty
 as of 2026-06; stick to 3.12.
 
 ## Auth
@@ -70,4 +69,4 @@ python -m nemotron_convert.verify_parity \
 ```
 
 Checks: encoder SNR >= 40 dB vs. the NeMo reference and exact token-sequence match
-on the same 30-second clip. See PLAN.md §3 Step 6 for the rationale and tolerance.
+on the same 30-second clip.

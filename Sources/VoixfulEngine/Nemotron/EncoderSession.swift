@@ -7,7 +7,7 @@
 // `EncDecRNNTBPEModelWithPrompt` and is not exercisable today.
 //
 // Three streaming caches (NOT four — the published checkpoint has no
-// `pre_cache`; the PLAN doc's mention of it was extrapolation from the
+// `pre_cache`; an earlier design note extrapolated a fourth cache from the
 // soniqo Core ML port for the multilingual model). Cache layout is
 // batch-first (`[B, n_layers, ...]`) to match what `forward_for_export`
 // consumes — see convert/nemotron_convert/models.py for the exact tensors.
@@ -81,7 +81,7 @@ public actor EncoderSession {
     // MARK: - Reset
 
     /// Zero all three streaming caches at utterance boundary.
-    /// PLAN.md §11 Anti-pattern 11: reset all together or none.
+    /// Anti-pattern: reset all together or none.
     public func reset() async {
         cacheLastChannel.zeroFloat32()
         cacheLastTime.zeroFloat32()

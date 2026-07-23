@@ -5,8 +5,8 @@
 // pulling the framework into modules that don't need it.
 //
 // Phase F additions: `ChunkSize` (the 5 cache-aware streaming configurations
-// from PLAN.md §2 "Chunk-size dial") and `Language` (the 40 locales from PLAN.md
-// §2 supported by the published Nemotron 3.5 checkpoint).
+// of the "Chunk-size dial") and `Language` (the 40 locales
+// supported by the published Nemotron 3.5 checkpoint).
 
 import Foundation
 
@@ -118,14 +118,14 @@ public struct Transcript: Sendable {
 // MARK: - Chunk size dial
 
 /// The five cache-aware streaming chunk configurations supported by the
-/// published Nemotron 3.5 checkpoint, per PLAN.md §2 ("Chunk-size dial").
+/// published Nemotron 3.5 checkpoint (the "Chunk-size dial").
 ///
 /// Each case corresponds to a distinct `att_context_size = [56, R]` setting on
 /// the encoder, where `R` is the number of right-context 80 ms frames included
 /// in the chunk. A single set of weights covers all five at runtime by varying
 /// `att_context_size`; whether the runtime selects between them via different
-/// inference function calls or via baked-per-`.aimodel` variants is the §10
-/// open question Phase 2/3 resolves. Until then, `NemotronStreamingEngine` accepts this
+/// inference function calls or via baked-per-`.aimodel` variants is an
+/// open question. Until then, `NemotronStreamingEngine` accepts this
 /// enum at init and uses it solely to gate how many mel frames to accumulate
 /// before invoking the encoder.
 ///
@@ -152,7 +152,7 @@ public enum ChunkSize: String, CaseIterable, Sendable {
     /// Near-offline. `att_context_size = [56, 13]`.
     case ms1120 = "1120ms"
 
-    /// The right-context size R from `att_context_size = [56, R]` per PLAN.md §2.
+    /// The right-context size R from `att_context_size = [56, R]`.
     ///
     /// This is the value the encoder needs to know about; the left context (56)
     /// is the same across all five cases and is baked into the cache shapes
@@ -171,14 +171,14 @@ public enum ChunkSize: String, CaseIterable, Sendable {
     /// right context frames. This is how many mel frames `NemotronStreamingEngine` must
     /// accumulate before invoking the encoder.
     ///
-    /// Derived as `1 + attContextRight`: PLAN.md §2 table shows the chunk
+    /// Derived as `1 + attContextRight`: the chunk
     /// itself is always one 80 ms frame and the variable is right context.
     /// (NeMo's frame rate at the cache-aware FastConformer subsampling output
     /// is 80 ms / frame; the mel preprocessor runs at 10 ms / frame and the
     /// encoder's first subsampling stack folds 8 mel frames → 1 encoder frame.)
     ///
-    /// VERIFY: confirm 80 ms encoder-frame stride against PLAN.md §10 open
-    /// questions — the mel→encoder-frame factor depends on the subsampling
+    /// VERIFY: confirm 80 ms encoder-frame stride (open question)
+    /// — the mel→encoder-frame factor depends on the subsampling
     /// stack inside `nemo_encoder.streaming_forward(...)` (see
     /// convert/nemotron_convert/wrappers.py). If the stack downsamples by
     /// a different factor, the totalFrames math here moves but the table
@@ -193,7 +193,7 @@ public enum ChunkSize: String, CaseIterable, Sendable {
         }
     }
 
-    /// Total chunk duration in milliseconds — matches the PLAN.md §2 table
+    /// Total chunk duration in milliseconds — matches the chunk-size table
     /// and the `rawValue` tag.
     public var durationMS: Int {
         switch self {
@@ -209,7 +209,7 @@ public enum ChunkSize: String, CaseIterable, Sendable {
 // MARK: - Language
 
 /// The 40 locales supported by the published Nemotron 3.5 ASR streaming
-/// checkpoint, per PLAN.md §2.
+/// checkpoint.
 ///
 /// Locales are grouped by support tier on the model card:
 ///   - 19 transcription-ready (production WER targets met)
@@ -220,13 +220,12 @@ public enum ChunkSize: String, CaseIterable, Sendable {
 ///
 /// `rawValue` is the BCP-47-ish `<lang>-<region>` tag used by the model's
 /// prompt-kernel language conditioning and surfaced verbatim in the
-/// `<en-US>`-style language tags inside the vocabulary (PLAN.md §3).
+/// `<en-US>`-style language tags inside the vocabulary.
 ///
 /// `allCases.count` must be exactly 40 — this is a sanity check on the
 /// language enumeration. The `dim = 128` one-hot vector built by `LangID`
 /// allocates 88 unused slots above the 40 supported locales; that's the
-/// model's published prompt-kernel dimensionality, not a per-language count
-/// (see PLAN.md §2).
+/// model's published prompt-kernel dimensionality, not a per-language count.
 public enum Language: String, CaseIterable, Sendable {
 
     // MARK: - 19 transcription-ready locales
@@ -280,16 +279,16 @@ public enum Language: String, CaseIterable, Sendable {
 
     // MARK: - Sanity checks
 
-    /// Debug-build assertion that the enum still matches PLAN.md §2's 40-locale
-    /// count. Trips early in DEBUG builds if a case is added or removed without
-    /// the matching PLAN.md update. The runtime test in `ParityTests.swift`
+    /// Debug-build assertion that the enum still matches the expected 40-locale
+    /// count. Trips early in DEBUG builds if a case is added or removed. The
+    /// runtime test in `ParityTests.swift`
     /// (Phase F follow-up) is the release-build counterpart.
     #if DEBUG
     @inlinable
     public static func _debugAssertCount() {
         assert(
             Language.allCases.count == 40,
-            "Language.allCases.count must be 40 per PLAN.md §2 (got \(Language.allCases.count))"
+            "Language.allCases.count must be 40 (got \(Language.allCases.count))"
         )
     }
     #endif

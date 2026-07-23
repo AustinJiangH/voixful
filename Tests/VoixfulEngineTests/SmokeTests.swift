@@ -1,4 +1,4 @@
-// Phase K — In-XCTest smoke harness.
+// In-XCTest smoke harness.
 //
 // Runs Steps 1-3 of the model-free smoke (enum sanity, MelExtractor on
 // synthetic audio, LangID.oneHot) on every `swift test` invocation. Step 4
@@ -15,7 +15,7 @@ import XCTest
 final class SmokeTests: XCTestCase {
 
     /// Step 1: enum-cardinality invariants. `ChunkSize.allCases.count == 5`
-    /// and `Language.allCases.count == 40` per PLAN.md §2.
+    /// and `Language.allCases.count == 40`.
     func testStep1EnumSanity() {
         let result = Smoke.step1EnumSanity()
         XCTAssertEqual(result.status, .pass,

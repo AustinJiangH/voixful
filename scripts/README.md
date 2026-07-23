@@ -29,9 +29,10 @@ location. Under ~10 s wall-clock once the build is warm.
 
 ## `verify-backends.sh`
 
-End-to-end verification of the `voixful` CLI across **all three backends**
-(Nemotron streaming RNN-T, Parakeet full-context TDT, Cohere AED). Builds release
-if needed, runs each backend on `fixtures/sample.wav`, and checks the transcript.
+End-to-end verification of the `voixful` CLI across every backend whose asset is
+present (Nemotron streaming RNN-T, Parakeet full-context TDT, Cohere AED, Granite
+NAR, Canary-Qwen SALM). Builds release if needed, runs each present backend on
+`fixtures/sample.wav`, and checks the transcript.
 
 **Usage**
 
@@ -39,11 +40,14 @@ if needed, runs each backend on `fixtures/sample.wav`, and checks the transcript
 ./scripts/verify-backends.sh [MODELS_DIR]
 ```
 
-`MODELS_DIR` defaults to `~/repos/voixful-models` and must contain the palette4
-assets, each self-contained (`pieces.txt` bundled inside the `.aimodel` dir):
+`MODELS_DIR` defaults to `~/repos/voixful-models` and holds the palette4 assets,
+each self-contained (`pieces.txt` bundled inside the `.aimodel` dir):
 `nemotron-speech-streaming-en-0.6b-palette4.aimodel`,
 `parakeet-tdt-0.6b-v3-palette4.aimodel`,
-`cohere-transcribe-03-2026-palette4.aimodel`. Exits non-zero on any failure.
+`cohere-transcribe-03-2026-palette4.aimodel`,
+`granite-speech-4.1-2b-nar-palette4.aimodel`,
+`canary-qwen-2.5b-palette4.aimodel`. Any backend whose asset is missing is
+**skipped** (not failed); the script exits non-zero only on a real failure.
 
 ## `run-all.sh`
 

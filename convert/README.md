@@ -3,22 +3,28 @@
 Python tooling that converts upstream ASR checkpoints into the Core AI
 `.aimodel` assets the Swift runtime loads. Organized **model by model**, mirroring
 the `Sources/` backend layout (`VoixfulNemotronStreaming`, `VoixfulParakeetTDT`,
-`VoixfulCohereTranscribe`): each model's conversion is self-contained — its own
-`pyproject.toml` (deps differ per model — Nemotron needs NeMo), its own package,
-its own README.
+`VoixfulCohereTranscribe`, `VoixfulGraniteNAR`, `VoixfulCanaryQwen`): each model's
+conversion is self-contained — its own `pyproject.toml` (deps differ per model —
+Nemotron needs NeMo), its own package, its own README.
 
 ```
 convert/
 ├── README.md                 ← you are here (brand overview)
-├── nemotron-streaming/                 ← Nemotron 3.5 ASR Streaming 0.6B (RNN-T, streaming)
+├── nemotron-streaming/       ← Nemotron Speech Streaming 0.6B (RNN-T, streaming)
 │   ├── pyproject.toml · README.md
 │   └── nemotron_convert/     ← convert.py / extract.py / export.py / models.py / …
-├── parakeet-tdt/                 ← Parakeet TDT 0.6B (TDT, full-context)
+├── parakeet-tdt/             ← Parakeet TDT 0.6B v2/v3 (TDT, full-context)
 │   ├── pyproject.toml · README.md
 │   └── parakeet_convert/     ← convert.py / extract.py / export.py / models.py
-└── cohere-transcribe/                   ← Cohere Transcribe 2B (attention encoder-decoder)
-    ├── pyproject.toml · README.md   ← gated model — authenticate first (see README)
-    └── cohere_convert/       ← convert.py / extract.py / export.py / models.py
+├── cohere-transcribe/        ← Cohere Transcribe 2B (attention encoder-decoder)
+│   ├── pyproject.toml · README.md   ← gated model — authenticate first (see README)
+│   └── cohere_convert/       ← convert.py / extract.py / export.py / models.py
+├── granite-speech/           ← Granite Speech 4.1 2B NAR (CTC + single-pass LLM editor)
+│   ├── pyproject.toml · README.md
+│   └── granite_convert/      ← convert.py / extract.py / export.py / models.py
+└── canary-qwen/              ← Canary-Qwen 2.5B (SALM: Conformer + Qwen3-1.7B)
+    ├── pyproject.toml · README.md
+    └── canary_convert/       ← convert.py / extract.py / export.py / models.py / …
 ```
 
 Each model is self-contained (own `pyproject.toml`, own package, own license note);
@@ -77,3 +83,6 @@ so these compressed models run only via the streaming `feed()` path — the batc
   - **Parakeet** (`nvidia/parakeet-tdt-0.6b-v3`) → **CC-BY-4.0** (attribution only).
   - **Cohere Transcribe** (`CohereLabs/cohere-transcribe-03-2026`) → its own upstream
     license (gated model — see `cohere-transcribe/README.md`).
+  - **Granite Speech** (`ibm-granite/granite-speech-4.1-2b-nar`) → **Apache-2.0**
+    (upstream weights; retain attribution).
+  - **Canary-Qwen** (`nvidia/canary-qwen-2.5b`) → **CC-BY-4.0** (attribution only).
