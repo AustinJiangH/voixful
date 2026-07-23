@@ -136,8 +136,12 @@ def main(argv: list[str] | None = None) -> int:
         ex_ids = torch.zeros(1, 8, dtype=torch.int64)
         llm_asr = _palettize(llm_asr, (ex_ids,), args.quantize)
         print(f"palettized llm_asr ({args.quantize})")
-        llm_plain = _palettize(llm_plain, (ex_ids,), args.quantize)
-        print(f"palettized llm_plain ({args.quantize})")
+        # The plain-instruct variant needs 6-bit: palette4 destroys its
+        # free-form instruction following (measured: babble instead of
+        # bullets), while the audio-conditioned ASR variant survives 4-bit.
+        plain_kind = "palette6" if args.quantize == "palette4" else args.quantize
+        llm_plain = _palettize(llm_plain, (ex_ids,), plain_kind)
+        print(f"palettized llm_plain ({plain_kind})")
 
         if args.check_wav:
             import soundfile as sf
@@ -161,6 +165,23 @@ def main(argv: list[str] | None = None) -> int:
             text = nemo_tok.ids_to_text(torch.tensor(ids))
             print(f"post-palettize ASR self-check: {text!r}")
             assert len(text.split()) >= 3, "palettized ASR collapsed — aborting"
+
+            # Format-pass self-check: the palettized PLAIN variant must still
+            # produce a bulleted list (this is the feature; ASR alone passing
+            # is not enough — measured regression on palette4).
+            no_think = [151667, 271, 151668, 271]
+            slot = fmt_pre + [t for t in ids] + fmt_post + no_think
+            embed_p = QwenEmbedForCoreAI(llm_plain).eval()
+            with torch.no_grad():
+                fe = embed_p(torch.tensor([slot], dtype=torch.int32))
+            fb = FMT_BUCKETS[0] if fe.shape[1] <= FMT_BUCKETS[0] else FMT_BUCKETS[-1]
+            pf2 = QwenPrefillForCoreAI(llm_plain, fb).eval()
+            st2 = QwenStepForCoreAI(llm_plain).eval()
+            fids = generate(pf2, st2, fe, fe.shape[1], fb, max_new=200)
+            ftext = nemo_tok.ids_to_text(torch.tensor(fids))
+            print(f"post-palettize FORMAT self-check:\n{ftext}")
+            assert any(l.strip().startswith("-") for l in ftext.splitlines()), \
+                "palettized format pass produced no bullets — aborting"
 
     converter = coreai_torch.TorchConverter()
     manifest_windows = []

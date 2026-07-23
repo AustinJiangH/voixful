@@ -148,6 +148,10 @@ public actor CanaryQwenEngine {
         let realT = melFlat.count / Self.nMels
         let window = windows.first(where: { $0.melFrames >= realT }) ?? windows[windows.count - 1]
         let useT = min(realT, window.melFrames)
+        // Canary's NeMo preprocessor has `normalize: per_feature` — same as
+        // Parakeet's. Skipping this leaves the encoder embeds near-orthogonal
+        // to reference (measured cos 0.08).
+        let normFlat = perFeatureNormalize(melFlat, nMels: Self.nMels, frames: realT)
 
         var melND = NDArray(shape: [1, Self.nMels, window.melFrames], scalarType: .float32)
         var melMV = melND.mutableView(as: Float.self)
@@ -155,7 +159,7 @@ public actor CanaryQwenEngine {
             ptr.update(repeating: 0, count: Self.nMels * window.melFrames)
             for m in 0..<Self.nMels {
                 let src = m * realT, dst = m * window.melFrames
-                for t in 0..<useT { ptr[dst + t] = melFlat[src + t] }
+                for t in 0..<useT { ptr[dst + t] = normFlat[src + t] }
             }
         }
         var lenND = NDArray(shape: [1], scalarType: .int32)
@@ -185,10 +189,16 @@ public actor CanaryQwenEngine {
         var text = detokenizer.decode(transcriptIds)
         var tFmt = tASR
         if Self.formatMode, !transcriptIds.isEmpty {
+            // Append a pre-closed empty think block ("<think>\n\n</think>\n\n",
+            // Qwen3's canonical no-think assistant prefix) so generation starts
+            // at the answer. The /no_think soft switch alone is a sampled
+            // behavior and flips under palette4/fp16 noise (measured: 384
+            // tokens of reasoning instead of bullets).
+            let noThink: [Int32] = [151667, 271, 151668, 271]
             let fpreE = try await embedIDs(fmtPre)
             let trE = try await embedIDs(transcriptIds)
-            let fpostE = try await embedIDs(fmtPost)
-            let need = fmtPre.count + transcriptIds.count + fmtPost.count
+            let fpostE = try await embedIDs(fmtPost + noThink)
+            let need = fmtPre.count + transcriptIds.count + fmtPost.count + noThink.count
             if let bucket = fmtBuckets.first(where: { $0 >= need }) {
                 let fmtIds = try await decode(
                     prefillName: "prefill_llm_\(bucket)", stepName: "step_llm",
@@ -273,6 +283,17 @@ public actor CanaryQwenEngine {
         }
         precondition(promptLen <= bucket, "prompt \(promptLen) > bucket \(bucket)")
 
+        // CANARY_DUMP=<dir>: write the assembled prompt embeds + prompt len
+        // for offline python-runtime replay (debugging aid).
+        if let dir = ProcessInfo.processInfo.environment["CANARY_DUMP"] {
+            embedsND.view(as: Float.self).withUnsafePointer { p, _, _ in
+                let data = Data(bytes: p, count: bucket * Self.hidden * 4)
+                try? data.write(to: URL(fileURLWithPath: "\(dir)/swift_embeds_\(prefillName).bin"))
+            }
+            try? "\(promptLen)".write(
+                toFile: "\(dir)/swift_promptlen_\(prefillName).txt", atomically: true, encoding: .utf8)
+        }
+
         var lastIdx = NDArray(shape: [1], scalarType: .int32)
         lastIdx.setInt32(at: 0, to: Int32(promptLen - 1))
 
@@ -320,16 +341,33 @@ public actor CanaryQwenEngine {
     private func loadPrefillCaches(kOut: NDArray, vOut: NDArray, rows: Int) {
         let d = 128, kv = 8, layers = 28
         let maxSeq = self.maxSeq
+        // Honor the source view's STRIDES — runtime outputs of this size come
+        // back with padded row pitches, so a dense flat copy scrambles rows
+        // (measured: step 1 fine, step 2+ garbage).
         func copy(_ src: NDArray, into dst: inout NDArray) {
-            src.view(as: Float.self).withUnsafePointer { s, _, _ in
+            src.view(as: Float.self).withUnsafePointer { s, _, strides in
+                let sl = strides[0], sh = strides[1], sr = strides[2], sd = strides[3]
                 var mv = dst.mutableView(as: Float.self)
                 mv.withUnsafeMutablePointer { p, _, _ in
                     for l in 0..<layers {
                         for h in 0..<kv {
-                            let srcOff = ((l * kv + h) * rows) * d
-                            let dstOff = ((l * kv + h) * maxSeq) * d
-                            p.advanced(by: dstOff)
-                                .update(from: s.advanced(by: srcOff), count: rows * d)
+                            let dstBase = ((l * kv + h) * maxSeq) * d
+                            if sd == 1, sr == d {
+                                p.advanced(by: dstBase)
+                                    .update(from: s.advanced(by: l * sl + h * sh), count: rows * d)
+                            } else if sd == 1 {
+                                for r in 0..<rows {
+                                    p.advanced(by: dstBase + r * d)
+                                        .update(from: s.advanced(by: l * sl + h * sh + r * sr), count: d)
+                                }
+                            } else {
+                                for r in 0..<rows {
+                                    let srcBase = l * sl + h * sh + r * sr
+                                    for e in 0..<d {
+                                        p[dstBase + r * d + e] = s[srcBase + e * sd]
+                                    }
+                                }
+                            }
                         }
                     }
                 }
