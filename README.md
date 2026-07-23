@@ -8,11 +8,16 @@ fully on device, on the ANE/GPU.
 
 ## What's here
 
-Three ASR backends ship today, spanning three architectures:
+Four ASR backends ship today, spanning four architectures:
 
 - **Nemotron** — streaming RNN-T (`nvidia/nemotron-speech-streaming-en-0.6b`, vocab 1024).
-- **Parakeet** — full-context TDT (`nvidia/parakeet-tdt-0.6b-v3`, vocab 8192).
+- **Parakeet** — full-context TDT (`nvidia/parakeet-tdt-0.6b-v3` multilingual
+  vocab 8192, or `-v2` English vocab 1024 — same pipeline, auto-detected from
+  the asset's `pieces.txt`).
 - **Cohere Transcribe** — attention encoder-decoder / AED (`CohereLabs/cohere-transcribe-03-2026`, vocab 16384).
+- **Granite NAR** — non-autoregressive CTC + single-pass LLM transcript editor
+  (`ibm-granite/granite-speech-4.1-2b-nar`, vocab 100352). Two dispatches per
+  clip, no decode loop at all.
 
 The Swift package layers them behind one model-agnostic façade:
 
@@ -76,6 +81,8 @@ Warm per-utterance numbers, M5 Pro, 5.5 s clip, palette4 assets:
 | Nemotron (batch) | ~0.18 s | mel 7 / encode 160 / decode 14 ms | better transcripts (full-context mel); needs `preprocess_audio` in the asset |
 | Parakeet (full-context) | ~0.07 s | mel 2 / encode 56 / decode 15 ms | CPU transducer decode via the `.transducer` sidecar |
 | Cohere 2B (AED) | ~0.29 s | mel 1 / encode 127 / decode 160 ms | + ~1.1 s one-time encoder window load, hidden by `prepare()` prewarm in session use |
+| Parakeet v2 (English) | ~0.07 s | mel 2 / encode 58 / decode 11 ms | best English WER of the small tier (5.39 leaderboard avg) |
+| Granite NAR 2B | ~0.29 s | encode 115 / edit 170 ms (mel in-graph) | best WER we ship (4.95); NO autoregressive loop — two dispatches per clip; `GRANITE_TRACE=1` |
 
 - **Multi-window encoders** (all three backends): the runtime picks the smallest
   exported `encode_<frames>` that fits the clip (Cohere ladder 220–3500, Parakeet
