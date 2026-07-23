@@ -85,6 +85,12 @@ public actor LiveFullContextTranscriber<Engine: FullContextEngine>: Transcribing
         await engine?.prewarm()
     }
 
+    /// True once any transcribe pass has produced a result. Until then the
+    /// UI shows a warming notice — a fresh model's first pass can spend tens
+    /// of seconds in one-time graph specialization, which otherwise looks
+    /// like a dead session (meter moves, no words).
+    private var producedFirstResult = false
+
     public func consume(_ input: AnalyzerInput) async throws {
         let samples = try converter.convert(input.buffer)
         utterance.append(contentsOf: samples)
@@ -99,6 +105,12 @@ public actor LiveFullContextTranscriber<Engine: FullContextEngine>: Transcribing
     private func maybeRefresh() {
         guard let engine, !refreshInFlight,
               utterance.count - samplesAtLastRefresh >= refreshStride else { return }
+        if !producedFirstResult {
+            continuation.yield(TranscriptionResult(
+                text: AttributedString("[ preparing \(modelName) — first pass can take a while ]"),
+                range: CMTimeRange(start: .zero, duration: .zero),
+                isFinal: false))
+        }
         refreshInFlight = true
         samplesAtLastRefresh = utterance.count
 
@@ -131,7 +143,10 @@ public actor LiveFullContextTranscriber<Engine: FullContextEngine>: Transcribing
         }
     }
 
-    private func refreshDone() { refreshInFlight = false }
+    private func refreshDone() {
+        refreshInFlight = false
+        producedFirstResult = true
+    }
 
     private func commitHead(text: String, samples: Int) {
         let t = text.trimmingCharacters(in: .whitespacesAndNewlines)

@@ -11,6 +11,13 @@ final class BackendClassifyTests: XCTestCase {
         ModelBackend.AssetFunctions(names: names, encodeHasStates: encodeHasStates)
     }
 
+    func testCanaryByStepEntrypoint() {
+        XCTAssertEqual(
+            ModelBackend.classify(fns(
+                ["encode_1000", "embed_256", "prefill_asr_160", "step_asr", "prefill_llm_256", "step_llm"])),
+            .canary)
+    }
+
     func testGraniteByEditEntrypoint() {
         XCTAssertEqual(
             ModelBackend.classify(fns(["encode_200", "encode_400", "edit_40_64", "edit_80_96"])),

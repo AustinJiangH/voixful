@@ -15,6 +15,7 @@ import VoixfulNemotronStreaming
 import VoixfulParakeetTDT
 import VoixfulCohereTranscribe
 import VoixfulGraniteNAR
+import VoixfulCanaryQwen
 import VoixfulFullContext
 import VoixfulEngine
 
@@ -62,6 +63,9 @@ struct Transcribe: AsyncParsableCommand {
     @Option(help: "Output format: text or json.")
     var format: String = "text"
 
+    @Flag(help: "Canary-Qwen only: reformat the transcript as markdown bullets (second LLM pass).")
+    var bullets: Bool = false
+
     func run() async throws {
         // Build the brand surface — every backend is a `Transcribing` module
         // driven through the same `VoixfulAnalyzer` (see README.md).
@@ -92,6 +96,10 @@ struct Transcribe: AsyncParsableCommand {
             case .granite:
                 // Self-contained: reads granite.json + tokens.json from the asset.
                 transcriber = GraniteTranscriber(
+                    modelURL: modelURL, piecesURL: piecesURL(modelURL), locale: locale)
+            case .canary:
+                if bullets { setenv("VOIXFUL_CANARY_FORMAT", "bullets", 1) }
+                transcriber = CanaryTranscriber(
                     modelURL: modelURL, piecesURL: piecesURL(modelURL), locale: locale)
             }
         } catch {
@@ -237,6 +245,9 @@ struct Mic: AsyncParsableCommand {
                     modelURL: modelURL, piecesURL: piecesURL, locale: locale)
             case .granite:
                 transcriber = LiveFullContextTranscriber<GraniteNAREngine>(
+                    modelURL: modelURL, piecesURL: piecesURL, locale: locale)
+            case .canary:
+                transcriber = LiveFullContextTranscriber<CanaryQwenEngine>(
                     modelURL: modelURL, piecesURL: piecesURL, locale: locale)
             }
         } catch {
