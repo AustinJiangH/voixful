@@ -123,14 +123,16 @@ class QwenPrefillForCoreAI(nn.Module):
         super().__init__()
         self.core = _QwenCore(hf_model)
         self.seq_len = seq_len
-        c = self.core
-        shape = (c.n_layers, 1, c.n_kv, MAX_SEQ, c.head_dim)
-        self.register_buffer("k_cache", torch.zeros(shape))
-        self.register_buffer("v_cache", torch.zeros(shape))
         causal = torch.full((seq_len, seq_len), torch.finfo(torch.float32).min)
         self.register_buffer("causal_mask", torch.triu(causal, diagonal=1).view(1, 1, seq_len, seq_len))
 
-    def forward(self, embeds: torch.Tensor, last_idx: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        embeds: torch.Tensor,
+        last_idx: torch.Tensor,
+        k_cache: torch.Tensor,
+        v_cache: torch.Tensor,
+    ):
         c = self.core
         L = self.seq_len
         cos = c.rope_cos[:L]
@@ -146,18 +148,18 @@ class QwenPrefillForCoreAI(nn.Module):
             x = x + att
             h = _rms_norm(x, layer.post_attention_layernorm.weight, c.eps)
             x = x + c.mlp(layer, h)
-        # Single full-buffer state write (the lowering-proven pattern) —
-        # per-layer slice assigns did not survive conversion.
+        # Functional state update (Cohere-proven): caches are forward args,
+        # updated tensors are outputs; state_names pairs them at export.
         pad = torch.zeros(len(new_k), 1, c.n_kv, MAX_SEQ - L, c.head_dim)
-        self.k_cache.copy_(torch.cat([torch.cat(new_k, dim=0).unsqueeze(1), pad], dim=3))
-        self.v_cache.copy_(torch.cat([torch.cat(new_v, dim=0).unsqueeze(1), pad], dim=3))
+        k_out = torch.cat([torch.cat(new_k, dim=0).unsqueeze(1), pad], dim=3)
+        v_out = torch.cat([torch.cat(new_v, dim=0).unsqueeze(1), pad], dim=3)
         x = _rms_norm(x, c.model.norm.weight, c.eps)
         # One-hot row extraction — aten.index_select with a runtime index
         # mis-lowers (reads a pad row); a matmul against the one-hot is exact.
         onehot = (torch.arange(L, dtype=torch.int32) == last_idx.reshape(1)).to(x.dtype)
         last = torch.matmul(onehot.view(1, 1, L), x).squeeze(1)      # [1,H]
         logits = c.lm_head(last)
-        return torch.argmax(logits, dim=-1).to(torch.int32)
+        return torch.argmax(logits, dim=-1).to(torch.int32), k_out, v_out
 
 
 class QwenStepForCoreAI(nn.Module):
@@ -167,13 +169,15 @@ class QwenStepForCoreAI(nn.Module):
         super().__init__()
         self.core = _QwenCore(hf_model)
         self.embed = hf_model.model.embed_tokens
-        c = self.core
-        shape = (c.n_layers, 1, c.n_kv, MAX_SEQ, c.head_dim)
-        self.register_buffer("k_cache", torch.zeros(shape))
-        self.register_buffer("v_cache", torch.zeros(shape))
         self.register_buffer("arangeS", torch.arange(MAX_SEQ, dtype=torch.int32))
 
-    def forward(self, tok: torch.Tensor, pos: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        tok: torch.Tensor,
+        pos: torch.Tensor,
+        k_cache: torch.Tensor,
+        v_cache: torch.Tensor,
+    ):
         c = self.core
         p = pos.to(torch.int64).reshape(1)
         x = self.embed(tok.to(torch.int64)).view(1, 1, c.hidden)
@@ -192,19 +196,19 @@ class QwenStepForCoreAI(nn.Module):
             # Broadcast one-hot write at row `pos` (no scatter, no .repeat());
             # computed as a LOCAL tensor so this layer attends to it, then all
             # 28 layers commit in one full-buffer copy_ after the loop.
-            knl = self.k_cache[li] * (1 - onehot[0]) + (k * onehot)[0]
-            vnl = self.v_cache[li] * (1 - onehot[0]) + (v * onehot)[0]
+            knl = k_cache[li] * (1 - onehot[0]) + (k * onehot)[0]
+            vnl = v_cache[li] * (1 - onehot[0]) + (v * onehot)[0]
             new_k.append(knl)
             new_v.append(vnl)
             att = c.attend(layer, q, knl, vnl, keymask)
             x = x + att
             h = _rms_norm(x, layer.post_attention_layernorm.weight, c.eps)
             x = x + c.mlp(layer, h)
-        self.k_cache.copy_(torch.stack(new_k, dim=0))
-        self.v_cache.copy_(torch.stack(new_v, dim=0))
+        k_out = torch.stack(new_k, dim=0)
+        v_out = torch.stack(new_v, dim=0)
         x = _rms_norm(x, c.model.norm.weight, c.eps)
         logits = c.lm_head(x.squeeze(1))
-        return torch.argmax(logits, dim=-1).to(torch.int32)
+        return torch.argmax(logits, dim=-1).to(torch.int32), k_out, v_out
 
 
 class CanaryEncoderForCoreAI(nn.Module):

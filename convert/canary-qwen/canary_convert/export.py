@@ -31,13 +31,20 @@ def export_embed(wrapper: QwenEmbedForCoreAI, n: int) -> ExportedProgram:
     return _decomp(torch.export.export(wrapper, args=(ids,)))
 
 
+def _cache_example() -> tuple[torch.Tensor, torch.Tensor]:
+    shape = (28, 1, 8, MAX_SEQ, 128)
+    return torch.zeros(shape), torch.zeros(shape)
+
+
 def export_prefill(wrapper: QwenPrefillForCoreAI) -> ExportedProgram:
     embeds = torch.zeros(1, wrapper.seq_len, 2048, dtype=torch.float32)
     last_idx = torch.tensor([wrapper.seq_len - 1], dtype=torch.int32)
-    return _decomp(torch.export.export(wrapper, args=(embeds, last_idx)))
+    k, v = _cache_example()
+    return _decomp(torch.export.export(wrapper, args=(embeds, last_idx, k, v)))
 
 
 def export_step(wrapper: QwenStepForCoreAI) -> ExportedProgram:
     tok = torch.zeros(1, dtype=torch.int32)
     pos = torch.tensor([MAX_SEQ - 1], dtype=torch.int32)
-    return _decomp(torch.export.export(wrapper, args=(tok, pos)))
+    k, v = _cache_example()
+    return _decomp(torch.export.export(wrapper, args=(tok, pos, k, v)))

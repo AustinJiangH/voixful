@@ -50,13 +50,15 @@ def split_at_placeholder(ids: list[int], placeholder: int) -> tuple[list[int], l
 
 def generate(prefill, step, embeds: torch.Tensor, prompt_len: int, bucket: int,
              max_new: int = 256) -> list[int]:
-    """embeds [1,P,2048] -> generated ids (greedy, stop at EOS)."""
+    """embeds [1,P,2048] -> generated ids (greedy, stop at EOS). Caches are
+    threaded functionally, exactly as the runtime passes them via states."""
     assert prompt_len <= bucket <= MAX_SEQ
     padded = torch.zeros(1, bucket, embeds.shape[-1])
     padded[:, :prompt_len] = embeds
+    k = torch.zeros(28, 1, 8, MAX_SEQ, 128)
+    v = torch.zeros(28, 1, 8, MAX_SEQ, 128)
     with torch.no_grad():
-        tok = prefill(padded, torch.tensor([prompt_len - 1], dtype=torch.int32))
-        # Prefill and step share cache buffers by construction (see convert).
+        tok, k, v = prefill(padded, torch.tensor([prompt_len - 1], dtype=torch.int32), k, v)
         out: list[int] = []
         pos = prompt_len
         while len(out) < max_new:
@@ -64,8 +66,8 @@ def generate(prefill, step, embeds: torch.Tensor, prompt_len: int, bucket: int,
             if t == EOS:
                 break
             out.append(t)
-            tok = step(torch.tensor([t], dtype=torch.int32),
-                       torch.tensor([pos], dtype=torch.int32))
+            tok, k, v = step(torch.tensor([t], dtype=torch.int32),
+                             torch.tensor([pos], dtype=torch.int32), k, v)
             pos += 1
     return out
 
@@ -118,10 +120,6 @@ def main(argv: list[str] | None = None) -> int:
 
     prefill_asr = QwenPrefillForCoreAI(mods["llm_asr"], bucket).eval()
     step_asr = QwenStepForCoreAI(mods["llm_asr"]).eval()
-    # Share the cache buffers between prefill and step (as the runtime does
-    # via function states).
-    step_asr.k_cache = prefill_asr.k_cache
-    step_asr.v_cache = prefill_asr.v_cache
 
     out_ids = generate(prefill_asr, step_asr, prompt_embeds, P, bucket)
     text = tok.ids_to_text(torch.tensor(out_ids))
@@ -142,8 +140,6 @@ def main(argv: list[str] | None = None) -> int:
 
     prefill_llm = QwenPrefillForCoreAI(mods["llm_plain"], fbucket).eval()
     step_llm = QwenStepForCoreAI(mods["llm_plain"]).eval()
-    step_llm.k_cache = prefill_llm.k_cache
-    step_llm.v_cache = prefill_llm.v_cache
 
     fmt_out = generate(prefill_llm, step_llm, fmt_embeds, FP, fbucket, max_new=512)
     fmt_text = tok.ids_to_text(torch.tensor(fmt_out))
