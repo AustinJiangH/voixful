@@ -14,6 +14,7 @@ import VoixfulTUI
 import VoixfulNemotronStreaming
 import VoixfulParakeetTDT
 import VoixfulCohereTranscribe
+import VoixfulGraniteNAR
 import VoixfulFullContext
 import VoixfulEngine
 
@@ -87,6 +88,10 @@ struct Transcribe: AsyncParsableCommand {
                     modelURL: modelURL, piecesURL: piecesURL(modelURL), locale: locale)
             case .cohere:
                 transcriber = CohereTranscriber(
+                    modelURL: modelURL, piecesURL: piecesURL(modelURL), locale: locale)
+            case .granite:
+                // Self-contained: reads granite.json + tokens.json from the asset.
+                transcriber = GraniteTranscriber(
                     modelURL: modelURL, piecesURL: piecesURL(modelURL), locale: locale)
             }
         } catch {
