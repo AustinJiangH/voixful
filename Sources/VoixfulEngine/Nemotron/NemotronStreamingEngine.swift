@@ -137,7 +137,7 @@ public actor NemotronStreamingEngine {
     ///
     /// - Parameters:
     ///   - modelURL: Path to the `nemotron-streaming.aimodel` artifact
-    ///     produced by `convert/nemotron_convert/convert.py`. The vocabulary
+    ///     produced by `convert/nemotron-streaming/nemotron_convert/convert.py`. The vocabulary
     ///     file is expected as a sibling named `vocab.txt` (see VERIFY below).
     ///   - language: Target locale for transcription. Drives the prompt-kernel
     ///     language conditioning via a 128-dim one-hot vector.

@@ -8,7 +8,7 @@
 //
 // State names ("lstm_h", "lstm_c") match the `state_names=[...]` list passed to
 // `converter.add_exported_program(...)` for the `predict_step` program in
-// convert/nemotron_convert/convert.py.
+// convert/nemotron-streaming/nemotron_convert/convert.py.
 //
 // Phase E amendment: GreedyRNNTDecoder needs the *current* prediction embedding
 // to feed the joiner BEFORE it knows whether the joiner will emit a non-blank
@@ -140,7 +140,7 @@ public actor PredictionSession {
 
         // VERIFY: Core AI API surface — MutableViews state-name keys must match
         // the `state_names=[...]` list for the `predict_step` program in
-        // convert/nemotron_convert/convert.py.
+        // convert/nemotron-streaming/nemotron_convert/convert.py.
         var states = InferenceFunction.MutableViews()
         states.insert(&lstmH, for: "lstm_h")
         states.insert(&lstmC, for: "lstm_c")

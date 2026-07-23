@@ -21,7 +21,7 @@
 //   See fixtures/README.md for how to materialize this from the canonical
 //   LibriSpeech tarball.
 // - `${repo}/fixtures/aimodel/`: the converted .aimodel directory produced
-//   by `convert/convert.py`. If missing, the test skips.
+//   by `convert/nemotron-streaming/nemotron_convert/convert.py`. If missing, the test skips.
 //
 // # WER computation
 //

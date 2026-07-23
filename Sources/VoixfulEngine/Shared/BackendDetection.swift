@@ -5,7 +5,9 @@
 // a runnable model (that would share a cached instance with the engine and
 // corrupt the streaming encoder's state setup):
 //
-//   - Cohere (attention encoder-decoder): has a `decode_step` function.
+//   - Canary-Qwen (SALM): has a `step_asr` function (autoregressive Qwen3 decode).
+//   - Granite (NAR): has `edit_<A>_<U>` single-pass LLM edit functions.
+//   - Cohere (attention encoder-decoder): has a `decode_step*` function.
 //   - Nemotron (streaming, cache-aware RNN-T): `encode` carries streaming cache
 //     STATES (cache_last_channel/…), no `decode_step`.
 //   - Parakeet (full-context TDT): `encode` has no states.

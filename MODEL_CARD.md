@@ -84,5 +84,7 @@ See the repo's `convert/README.md` and the design notes for the full recipe.
 - 4-bit palettization holds accuracy on our sample; **validate WER on a real
   eval set** before production. A 6-bit variant (`--quantize palette6`) is a
   safer fallback.
-- Built with pre-release Apple Core AI tooling (`coreai-torch 0.4.0`,
-  `coreai-opt 0.2.0`); re-verify on newer releases.
+- Built with pre-release Apple Core AI tooling (`coreai-torch ≥ 0.4.1`,
+  `coreai-opt 0.2.0`); re-verify on newer releases. Assets exported with
+  0.4.0-era tooling fail to load from macOS 27 beta 3 on ("Failed to convert to
+  versioned IR") and must be re-exported.

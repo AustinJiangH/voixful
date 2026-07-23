@@ -1,7 +1,7 @@
 // Phase F — 128-dim one-hot language ID construction.
 //
 // The cache-aware FastConformer encoder takes a 128-dim language one-hot as
-// its second input (`lang_id` per `convert/nemotron_convert/convert.py`).
+// its second input (`lang_id` per `convert/nemotron-streaming/nemotron_convert/convert.py`).
 // The published checkpoint allocates 128 slots for
 // language conditioning — that's the prompt-kernel dimensionality, not a
 // per-language count. 40 of those slots are populated with the supported
@@ -39,7 +39,7 @@ public struct LangID: Sendable {
     ///      EncoderSession.forward passes whatever this returns directly to
     ///      `inputs: ["lang_id": langId]`; the encoder graph was exported with
     ///      `example_lang` of a specific shape (see
-    ///      convert/nemotron_convert/convert.py).
+    ///      convert/nemotron-streaming/nemotron_convert/convert.py).
     ///      If the exported graph wants `[1, 128]`, change the shape literal
     ///      below and the matching `example_lang` in convert.py together.
     ///   2. Is the canonical lang→slot mapping the `Language` declaration order

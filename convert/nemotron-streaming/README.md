@@ -26,9 +26,10 @@ source .venv/bin/activate
 pip install --pre -e .
 ```
 
-NeMo 26.06 and `coreai-torch` 0.4.0 both run cleanly on the same
-PyTorch 2.11.0 / Python 3.12 install — no two-env workaround required. Python 3.13/3.14 wheels for several NeMo deps are spotty
-as of 2026-06; stick to 3.12.
+NeMo 26.06 and `coreai-torch` (**≥ 0.4.1** — 0.4.0 exports fail to load from
+macOS 27 beta 3 on) both run cleanly on the same PyTorch 2.11.0 / Python 3.12
+install — no two-env workaround required. Python 3.13/3.14 wheels for several
+NeMo deps are spotty as of 2026-06; stick to 3.12.
 
 ## Auth
 

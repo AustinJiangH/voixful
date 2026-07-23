@@ -12,7 +12,8 @@ fully on device, on the ANE/GPU.
 
 ## What's here
 
-Six ASR backends ship today, spanning five architectures. The backend is
+Six model checkpoints ship today across five backends, spanning five
+architectures (Parakeet v2 and v3 share the `VoixfulParakeetTDT` backend). The backend is
 auto-detected from the `.aimodel`'s function signatures — same `transcribe` /
 `mic` commands for all of them.
 
@@ -234,8 +235,8 @@ voixful/
 - **Code → GitHub** (this repo).
 - **Model weights → Hugging Face** — `.aimodel` files are large binaries; HF is
   built for them (LFS, model cards, versioning). GitHub is poor for >100 MB blobs.
-  Publish the `.aimodel` + `pieces.txt` + `MODEL_CARD.md` to an HF model repo and
-  have the convert pipeline / a download step fetch it.
+  Publish the `.aimodel` (with `pieces.txt` bundled inside it) + `MODEL_CARD.md`
+  to an HF model repo and have the convert pipeline / a download step fetch it.
 
 ## Contributing
 
@@ -251,12 +252,19 @@ Two licenses, by artifact type:
 
 - **Code in this repo → Apache License 2.0** — see [`LICENSE`](LICENSE) and
   [`NOTICE`](NOTICE).
-- **Model weights** (the `.aimodel` artifacts and any quantized/palettized
-  derivatives) → **[NVIDIA Open Model License Agreement](https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-open-model-license/)**,
-  as derivatives of
-  [`nvidia/nemotron-speech-streaming-en-0.6b`](https://huggingface.co/nvidia/nemotron-speech-streaming-en-0.6b)
-  (permits commercial use, redistribution, and derivatives — retain attribution +
-  the license). See [`MODEL_CARD.md`](MODEL_CARD.md).
+- **Model weights** (each `.aimodel` and any quantized/palettized derivative) →
+  **the license of the upstream checkpoint it derives from**, which differs per
+  model. Retain the upstream attribution + license when you redistribute:
 
-The weights are **not** Apache-licensed; keep the two clearly separated when you
-redistribute.
+  | Backend | Upstream checkpoint | Weights license |
+  |---|---|---|
+  | Nemotron | `nvidia/nemotron-speech-streaming-en-0.6b` | [NVIDIA Open Model License](https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-open-model-license/) |
+  | Parakeet v2/v3 | `nvidia/parakeet-tdt-0.6b-v2` / `-v3` | CC-BY-4.0 |
+  | Cohere Transcribe | `CohereLabs/cohere-transcribe-03-2026` | upstream (gated — see `convert/cohere-transcribe/README.md`) |
+  | Granite NAR | `ibm-granite/granite-speech-4.1-2b-nar` | Apache-2.0 |
+  | Canary-Qwen | `nvidia/canary-qwen-2.5b` | CC-BY-4.0 |
+
+  See [`MODEL_CARD.md`](MODEL_CARD.md) and the per-model `convert/*/README.md`.
+
+The weights are **not** covered by this repo's Apache license; keep the two
+clearly separated when you redistribute.

@@ -29,6 +29,10 @@ models/
 # and the aimodel/ directory are regenerated locally — see fixtures/README.md).
 !fixtures/*.md
 !fixtures/vocab.*
+# Never commit locally-materialized model artifacts (they carry upstream model
+# licenses + can embed upstream training paths — keep them out of this repo).
+fixtures/aimodel/
+fixtures/.model-downloaded
 
 # IDE
 .vscode/
