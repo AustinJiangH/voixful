@@ -40,15 +40,26 @@ public actor LiveFullContextTranscriber<Engine: FullContextEngine>: Transcribing
     private var utterance: [Float] = []
     private var samplesAtLastRefresh = 0
     private var refreshInFlight = false
+    /// Transcript of audio already COMMITTED and dropped from `utterance`.
+    /// Long dictation would otherwise outgrow the engine's largest window
+    /// (which silently truncates) and make every refresh pass slower: once
+    /// the live buffer passes `commitThreshold`, the head is split at the
+    /// quietest gap, transcribed once, its text frozen here, and only the
+    /// tail keeps re-transcribing — refreshes get fast again after each
+    /// commit and no audio is ever dropped.
+    private var committedText = ""
 
     /// New audio required before another refresh pass (16 kHz samples).
     private let refreshStride: Int
+    /// Live-buffer size that triggers a head commit (16 kHz samples).
+    private let commitThreshold: Int
 
     public init(
         modelURL: URL,
         piecesURL: URL,
         locale: Locale = Locale(identifier: "en-US"),
-        refreshStrideMS: Int = 700
+        refreshStrideMS: Int = 700,
+        commitThresholdSeconds: Int = 24
     ) {
         self.modelURL = modelURL
         self.piecesURL = piecesURL
@@ -58,6 +69,7 @@ public actor LiveFullContextTranscriber<Engine: FullContextEngine>: Transcribing
         self.reportingOptions = [.volatileResults]
         self.attributeOptions = []
         self.refreshStride = max(1, refreshStrideMS) * 16
+        self.commitThreshold = max(8, commitThresholdSeconds) * 16_000
         let (stream, continuation) = AsyncThrowingStream<TranscriptionResult, Error>.makeStream()
         self.results = stream
         self.continuation = continuation
@@ -80,17 +92,36 @@ public actor LiveFullContextTranscriber<Engine: FullContextEngine>: Transcribing
     }
 
     /// Kick a volatile re-transcribe pass if enough new audio arrived and no
-    /// pass is in flight. Detached so the mic feed is never blocked.
+    /// pass is in flight. When the live buffer has outgrown the commit
+    /// threshold, this pass doubles as a head commit: transcribe up to the
+    /// quietest gap, freeze that text, drop those samples. Detached so the
+    /// mic feed is never blocked.
     private func maybeRefresh() {
         guard let engine, !refreshInFlight,
               utterance.count - samplesAtLastRefresh >= refreshStride else { return }
         refreshInFlight = true
         samplesAtLastRefresh = utterance.count
+
+        if utterance.count >= commitThreshold {
+            let splitAt = Self.quietestSplit(
+                utterance, from: commitThreshold / 2, to: commitThreshold)
+            let head = Array(utterance[..<splitAt])
+            Task {
+                let text = (try? await engine.transcribe(audio: head))?.text ?? ""
+                await self.commitHead(text: text, samples: splitAt)
+            }
+            return
+        }
+
         let snapshot = utterance
+        let prefix = committedText
         Task { [continuation] in
             if let transcript = try? await engine.transcribe(audio: snapshot) {
+                let joined = prefix.isEmpty
+                    ? transcript.text
+                    : prefix + " " + transcript.text
                 continuation.yield(TranscriptionResult(
-                    text: AttributedString(transcript.text),
+                    text: AttributedString(joined),
                     range: CMTimeRange(
                         start: .zero,
                         duration: CMTime(seconds: Double(snapshot.count) / 16_000, preferredTimescale: 1_000)),
@@ -102,13 +133,55 @@ public actor LiveFullContextTranscriber<Engine: FullContextEngine>: Transcribing
 
     private func refreshDone() { refreshInFlight = false }
 
+    private func commitHead(text: String, samples: Int) {
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !t.isEmpty {
+            committedText = committedText.isEmpty ? t : committedText + " " + t
+        }
+        utterance.removeFirst(min(samples, utterance.count))
+        samplesAtLastRefresh = 0
+        refreshInFlight = false
+        maybeRefresh()  // tail may already be past the refresh stride
+    }
+
+    /// Index of the quietest 200 ms in `[from, to)` — a cheap pause detector
+    /// so head commits split between words, not through them. Returns the
+    /// middle of the quietest window.
+    private static func quietestSplit(_ audio: [Float], from: Int, to: Int) -> Int {
+        let win = 3_200  // 200 ms at 16 kHz
+        let hi = min(to, audio.count) - win
+        guard hi > from else { return min(to, audio.count) }
+        var best = from
+        var bestEnergy = Float.greatestFiniteMagnitude
+        var i = from
+        while i < hi {
+            var e: Float = 0
+            for j in i..<(i + win) { e += audio[j] * audio[j] }
+            if e < bestEnergy {
+                bestEnergy = e
+                best = i
+            }
+            i += win / 2
+        }
+        return best + win / 2
+    }
+
     public func finalize() async throws {
         guard let engine else { continuation.finish(); return }
         do {
-            let transcript = try await engine.transcribe(audio: utterance)
+            // Wait out any in-flight refresh/commit so the tail buffer and
+            // committedText are settled before the final pass.
+            while refreshInFlight {
+                try await Task.sleep(nanoseconds: 20_000_000)
+            }
+            let tail = try await engine.transcribe(audio: utterance).text
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let full = committedText.isEmpty
+                ? tail
+                : (tail.isEmpty ? committedText : committedText + " " + tail)
             let duration = Double(utterance.count) / 16_000.0
             continuation.yield(TranscriptionResult(
-                text: AttributedString(transcript.text),
+                text: AttributedString(full),
                 range: CMTimeRange(
                     start: .zero,
                     duration: CMTime(seconds: duration, preferredTimescale: 1_000)),

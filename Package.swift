@@ -104,7 +104,7 @@ let package = Package(
         ),
         .testTarget(
             name: "VoixfulEngineTests",
-            dependencies: ["VoixfulEngine"]
+            dependencies: ["VoixfulEngine", "VoixfulFullContext", "VoixfulGraniteNAR", "VoixfulSpeech"]
         ),
     ]
 )
