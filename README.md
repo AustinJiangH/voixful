@@ -8,19 +8,28 @@ fully on device, on the ANE/GPU.
 
 ## What's here
 
-Four ASR backends ship today, spanning four architectures:
+Six ASR backends ship today, spanning five architectures. The backend is
+auto-detected from the `.aimodel`'s function signatures — same `transcribe` /
+`mic` commands for all of them.
 
-- **Nemotron** — streaming RNN-T (`nvidia/nemotron-speech-streaming-en-0.6b`, vocab 1024).
-- **Parakeet** — full-context TDT (`nvidia/parakeet-tdt-0.6b-v3` multilingual
-  vocab 8192, or `-v2` English vocab 1024 — same pipeline, auto-detected from
-  the asset's `pieces.txt`).
-- **Cohere Transcribe** — attention encoder-decoder / AED (`CohereLabs/cohere-transcribe-03-2026`, vocab 16384).
-- **Granite NAR** — non-autoregressive CTC + single-pass LLM transcript editor
-  (`ibm-granite/granite-speech-4.1-2b-nar`, vocab 100352). Two dispatches per
-  clip, no decode loop at all.
-- **Canary-Qwen** — SALM: Conformer encoder + Qwen3-1.7B decoder
-  (`nvidia/canary-qwen-2.5b`, vocab 151936). Punctuated + capitalized English
-  transcripts; AR decode (KV-cached prefill/step).
+| Model | Params | Architecture | Native streaming | Live mic | Languages | WER¹ |
+|---|---|---|---|---|---|---|
+| **Nemotron** `nvidia/nemotron-speech-streaming-en-0.6b` | 0.6 B | cache-aware streaming RNN-T | **yes** — partials every ~0.7 s while you speak | best latency | English only | 5.73 |
+| **Parakeet v2** `nvidia/parakeet-tdt-0.6b-v2` | 0.6 B | full-context TDT | no (re-transcribe partials) | great (fastest passes, ~70 ms) | English only | 5.39 |
+| **Parakeet v3** `nvidia/parakeet-tdt-0.6b-v3` | 0.6 B | full-context TDT | no (re-transcribe partials) | great (~75 ms passes) | **25 languages** (European incl. en/de/fr/es/it/pt/pl/uk/ru…) | 5.66 |
+| **Granite NAR** `ibm-granite/granite-speech-4.1-2b-nar` | 2.2 B | CTC + single-pass LLM editor (no decode loop) | no (re-transcribe partials) | good (~0.3 s passes) | **en, fr, de, es, pt** | 4.95 (best) |
+| **Cohere Transcribe** `CohereLabs/cohere-transcribe-03-2026` | 2 B | attention encoder-decoder | no (re-transcribe partials) | ok (~0.3 s passes) | **14 languages** | 5.20 |
+| **Canary-Qwen** `nvidia/canary-qwen-2.5b` | 2.5 B | SALM: Conformer + Qwen3-1.7B | no (re-transcribe partials) | sluggish (~3–4 s passes) — prefer for files | English only | 5.06 |
+
+¹ Open ASR Leaderboard mean WER (lower is better), for the source checkpoints.
+
+**Streaming vs. live mic.** Only Nemotron streams natively (its encoder is
+cache-aware, so words appear *while* you speak). Every other backend is
+full-context: `mic` still works — the live wrapper re-transcribes the growing
+utterance and commits chunks at silence gaps — but the refresh cadence is the
+backend's full-pass latency. Practically: Nemotron for lowest-latency dictation,
+Granite for the most accurate live+file balance, Parakeet v2 for the smallest
+footprint, Canary-Qwen when you want punctuated + capitalized file transcripts.
 
 The Swift package layers them behind one model-agnostic façade:
 
@@ -30,8 +39,8 @@ The Swift package layers them behind one model-agnostic façade:
 - **`VoixfulEngine`** — the engines themselves, organized per architecture under
   `Nemotron/`, `Parakeet/`, `Cohere/`, and `Shared/`.
 - **`VoixfulNemotronStreaming`** / **`VoixfulParakeetTDT`** / **`VoixfulCohereTranscribe`**
-  — thin per-architecture façade targets, each exposing a `Transcribing` conformer
-  over its engine.
+  / **`VoixfulGraniteNAR`** / **`VoixfulCanaryQwen`** — thin per-architecture
+  façade targets, each exposing a `Transcribing` conformer over its engine.
 - **`VoixfulTUI`** — a reusable live-mic terminal UI (used by the CLI; works for
   any backend).
 - **`VoixfulCLI`** — the `voixful` executable: `transcribe`, `mic`, `languages`.
@@ -117,10 +126,12 @@ voixful/
 ├── Sources/
 │   ├── VoixfulSpeech/          # brand core (analyzer + protocols + types)
 │   ├── VoixfulTUI/             # reusable live-mic terminal UI
-│   ├── VoixfulEngine/          # engines: Nemotron/ Parakeet/ Cohere/ Shared/
+│   ├── VoixfulEngine/          # engines: Nemotron/ Parakeet/ Cohere/ Granite/ Canary/ Shared/
 │   ├── VoixfulNemotronStreaming/   # NemotronStreamingTranscriber : Transcribing
 │   ├── VoixfulParakeetTDT/         # ParakeetTDTTranscriber : Transcribing
 │   ├── VoixfulCohereTranscribe/    # CohereTranscriber : Transcribing
+│   ├── VoixfulGraniteNAR/          # GraniteTranscriber : Transcribing
+│   ├── VoixfulCanaryQwen/          # CanaryTranscriber : Transcribing
 │   └── VoixfulCLI/             # `voixful` executable
 ├── convert/                    # model conversion, one dir per model
 │   ├── nemotron-streaming/     # NeMo → coreai_torch → .aimodel (+ --quantize)
