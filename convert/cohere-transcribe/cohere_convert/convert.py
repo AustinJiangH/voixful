@@ -17,12 +17,24 @@ from .export import (
     MEL_FRAMES,
     N_MELS,
     encoder_example,
+    export_cached_decoder,
+    export_cross_kv_projector,
     export_decoder,
     export_encoder,
+    export_fused_decoder,
+    export_x4_decoder,
+    fused_decoder_example,
     trace_t_enc,
 )
 from .extract import DEFAULT_MODEL_ID, load_cohere
-from .models import CohereDecoderStepForCoreAI, CohereEncoderForCoreAI
+from .models import (
+    CohereCrossKVProjectorForCoreAI,
+    CohereDecoderStepCachedForCoreAI,
+    CohereDecoderStepForCoreAI,
+    CohereDecoderStepFusedForCoreAI,
+    CohereDecoderX4ForCoreAI,
+    CohereEncoderForCoreAI,
+)
 
 DEFAULT_OUTPUT = "./cohere-transcribe.aimodel"
 ENCODE_FN = "encode"
@@ -63,6 +75,33 @@ def _build_quantizer(kind: str):
     raise ValueError(kind)
 
 
+def _build_decoder_quantizer(kind: str, t_enc: int):
+    """Decoder (decode_x4) compressor. The ~4.6 ms/step decode floor measured
+    on M5 Pro is placement- and kernel-count-invariant — it is the ~0.3 GB of
+    fp16 decoder+head weights re-streamed EVERY token. Palettization cuts that
+    stream ~2.7x (palette6) to ~4x (palette4). Applied to the x4 wrapper only:
+    decode_step_fused stays fp16 as the parity fallback."""
+    if kind == "none":
+        return None
+    example = fused_decoder_example(t_enc)
+    if kind in ("palette4", "palette6"):
+        from coreai_opt.palettization import KMeansPalettizer, KMeansPalettizerConfig
+
+        preset = {
+            "palette4": KMeansPalettizerConfig.presets.w4,
+            "palette6": KMeansPalettizerConfig.presets.w6,
+        }[kind]
+        cfg = preset()
+
+        def p(dec):
+            pp = KMeansPalettizer(dec, cfg)
+            pp.prepare(example_inputs=example)
+            return pp.finalize()
+
+        return p
+    raise ValueError(kind)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="cohere-convert")
     parser.add_argument("--model-id", default=DEFAULT_MODEL_ID)
@@ -73,8 +112,61 @@ def main(argv: list[str] | None = None) -> int:
         default="none",
         help="Encoder compression (>90%% of params): palette4 = the RAM win.",
     )
+    parser.add_argument(
+        "--quantize-decoder",
+        choices=["none", "palette4", "palette6"],
+        default="none",
+        help=(
+            "Compress decode_x4's weights (decoder layers + 16384-vocab head). "
+            "Decode is weight-bandwidth-bound (~0.3 GB fp16 re-streamed per "
+            "token); palette6 is the parity-safe first step. decode_step_fused "
+            "keeps fp16 weights as a fallback. Token-exact parity vs the fp16 "
+            "decoder must be verified before shipping."
+        ),
+    )
+    parser.add_argument(
+        "--decoder-asset",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Also write <output stem>-decoder.aimodel containing only "
+            "project_cross_kv + decode_step_fused + decode_x4. A separate "
+            "asset is the only way to give the decoder its own compute-unit "
+            "placement: AIModel specialization is whole-asset, so pinning the "
+            "shared asset drags the (ANE/GPU-only palettized) encoder along."
+        ),
+    )
+    parser.add_argument(
+        "--legacy-decoders",
+        action="store_true",
+        help=(
+            "Also export the superseded decode_step / decode_step_cached "
+            "programs. The runtime's preference chain (decode_x4 -> "
+            "decode_step_fused -> decode_step_cached -> decode_step) never "
+            "reaches them when decode_x4 ships, so they are dead weight in "
+            "the asset by default."
+        ),
+    )
+    parser.add_argument(
+        "--windows",
+        default="220,440,660,875,1300,1750,2600,3500",
+        help=(
+            "Comma-separated encoder mel-frame windows. The traced encoder always "
+            "runs its full window, so a short clip in the 35 s window burns 48-layer "
+            "compute on zero padding; exporting several windows lets the runtime pick "
+            "the smallest >= the clip's frames. The LARGEST must stay 3500 (the "
+            "decoder is traced against its T_enc=438) and keeps the name 'encode'; "
+            "smaller windows are 'encode_<frames>' and the runtime zero-pads their "
+            "output up to 438 (the cross-attention mask hides the padding)."
+        ),
+    )
     args = parser.parse_args(argv)
     output_path = Path(args.output)
+    windows = sorted({int(w) for w in args.windows.split(",")})
+    assert windows[-1] == MEL_FRAMES, (
+        f"largest --windows entry must be {MEL_FRAMES} (the decoder's cross-attention "
+        f"is traced against its T_enc); got {windows[-1]}"
+    )
 
     quantize_encoder = _build_quantizer(args.quantize)
 
@@ -82,7 +174,6 @@ def main(argv: list[str] | None = None) -> int:
     model = load_cohere(args.model_id)
 
     encoder_wrapper = CohereEncoderForCoreAI(model.encoder, model.encoder_decoder_proj).eval()
-    decoder_wrapper = CohereDecoderStepForCoreAI(model, max_cache_len=CACHE_LEN).eval()
 
     t_enc = trace_t_enc(encoder_wrapper)
     print(f"Encoder output time length T_enc = {t_enc} (from mel {N_MELS}x{MEL_FRAMES})")
@@ -101,30 +192,103 @@ def main(argv: list[str] | None = None) -> int:
         encoder_wrapper = quantize_encoder(encoder_wrapper)
         print(f"Applied {args.quantize} compression to the encoder.")
 
-    print("Exporting encoder ...")
-    exported_encoder = export_encoder(encoder_wrapper)
-    print("Exporting decoder_step ...")
-    exported_decoder = export_decoder(decoder_wrapper, t_enc)
+    exported_decoder = None
+    exported_cached_decoder = None
+    if args.legacy_decoders:
+        decoder_wrapper = CohereDecoderStepForCoreAI(model, max_cache_len=CACHE_LEN).eval()
+        print("Exporting decoder_step ...")
+        exported_decoder = export_decoder(decoder_wrapper, t_enc)
+        cached_decoder_wrapper = CohereDecoderStepCachedForCoreAI(
+            model, max_cache_len=CACHE_LEN
+        ).eval()
+        print("Exporting decode_step_cached ...")
+        exported_cached_decoder = export_cached_decoder(cached_decoder_wrapper, t_enc)
+
+    # Cached-decoder projector: cross-K/V projected once per utterance; the
+    # per-step decoders read them (and mutate the self-attention cache) via
+    # zero-copy states instead of threading ~14 MB/token of tensors.
+    projector_wrapper = CohereCrossKVProjectorForCoreAI(model).eval()
+    print("Exporting project_cross_kv ...")
+    exported_projector = export_cross_kv_projector(projector_wrapper, t_enc)
+    fused_decoder_wrapper = CohereDecoderStepFusedForCoreAI(
+        model, t_enc=t_enc, max_cache_len=CACHE_LEN
+    ).eval()
+    print("Exporting decode_step_fused ...")
+    exported_fused_decoder = export_fused_decoder(fused_decoder_wrapper, t_enc)
+    x4_decoder_wrapper = CohereDecoderX4ForCoreAI(
+        model, t_enc=t_enc, max_cache_len=CACHE_LEN
+    ).eval()
+    quantize_decoder = _build_decoder_quantizer(args.quantize_decoder, t_enc)
+    if quantize_decoder is not None:
+        x4_decoder_wrapper = quantize_decoder(x4_decoder_wrapper)
+        print(f"Applied {args.quantize_decoder} compression to decode_x4.")
+    print("Exporting decode_x4 ...")
+    exported_x4_decoder = export_x4_decoder(x4_decoder_wrapper, t_enc)
 
     converter = coreai_torch.TorchConverter()
+    # One encoder program per window; the largest (3500 — the decoder's traced
+    # T_enc contract) is the canonical `encode`, smaller are `encode_<frames>`.
+    # The runtime zero-pads a smaller window's output up to T_enc=438.
+    for w in windows:
+        name = ENCODE_FN if w == windows[-1] else f"{ENCODE_FN}_{w}"
+        print(f"Exporting encoder window {w} frames -> function '{name}' ...")
+        converter.add_exported_program(
+            export_encoder(encoder_wrapper, mel_frames=w),
+            entrypoint_name=name,
+            input_names=["input_features", "length"],
+            output_names=["encoder_hidden_states"],
+        )
+    if exported_decoder is not None:
+        converter.add_exported_program(
+            exported_decoder,
+            entrypoint_name=DECODE_FN,
+            input_names=[
+                "input_id", "position_id", "encoder_hidden_states",
+                "self_attention_mask", "cross_attention_mask", "k_cache", "v_cache",
+            ],
+            output_names=["logits", "k_cache_out", "v_cache_out"],
+        )
     converter.add_exported_program(
-        exported_encoder,
-        entrypoint_name=ENCODE_FN,
-        input_names=["input_features", "length"],
-        output_names=["encoder_hidden_states"],
+        exported_projector,
+        entrypoint_name="project_cross_kv",
+        input_names=["encoder_hidden_states"],
+        output_names=["cross_k", "cross_v"],
+    )
+    if exported_cached_decoder is not None:
+        converter.add_exported_program(
+            exported_cached_decoder,
+            entrypoint_name="decode_step_cached",
+            input_names=[
+                "input_id", "position_id",
+                "self_attention_mask", "cross_attention_mask",
+                "cross_k", "cross_v",
+            ],
+            state_names=["k_cache", "v_cache"],
+            output_names=["logits"],
+        )
+    converter.add_exported_program(
+        exported_fused_decoder,
+        entrypoint_name="decode_step_fused",
+        input_names=["input_id", "position_id", "enc_len", "cross_k", "cross_v"],
+        state_names=["k_cache", "v_cache"],
+        output_names=["token"],
     )
     converter.add_exported_program(
-        exported_decoder,
-        entrypoint_name=DECODE_FN,
-        input_names=[
-            "input_id", "position_id", "encoder_hidden_states",
-            "self_attention_mask", "cross_attention_mask", "k_cache", "v_cache",
-        ],
-        output_names=["logits", "k_cache_out", "v_cache_out"],
+        exported_x4_decoder,
+        entrypoint_name="decode_x4",
+        input_names=["input_id", "position_id", "enc_len", "cross_k", "cross_v"],
+        state_names=["k_cache", "v_cache"],
+        output_names=["tokens"],
     )
 
     ai_program = converter.to_coreai()
     ai_program.optimize()
+    if output_path.exists():
+        # save_asset refuses to overwrite (FileExistsError on main.mlirb);
+        # treat the output like any build artifact and replace it.
+        import shutil
+        shutil.rmtree(output_path)
+        print(f"Replaced existing {output_path}")
     ai_program.save_asset(output_path)
 
     # Bundle the SentencePiece vocab inside the .aimodel so the runtime is
@@ -145,6 +309,38 @@ def main(argv: list[str] | None = None) -> int:
     (output_path / "pieces.txt").write_text("\n".join(pieces) + "\n", encoding="utf-8")
 
     print(f"Wrote {output_path} (quantize={args.quantize}, T_enc={t_enc}) + pieces.txt ({len(pieces)}).")
+
+    if args.decoder_asset:
+        dec_path = output_path.with_name(output_path.stem + "-decoder.aimodel")
+        dec_converter = coreai_torch.TorchConverter()
+        dec_converter.add_exported_program(
+            exported_projector,
+            entrypoint_name="project_cross_kv",
+            input_names=["encoder_hidden_states"],
+            output_names=["cross_k", "cross_v"],
+        )
+        dec_converter.add_exported_program(
+            exported_fused_decoder,
+            entrypoint_name="decode_step_fused",
+            input_names=["input_id", "position_id", "enc_len", "cross_k", "cross_v"],
+            state_names=["k_cache", "v_cache"],
+            output_names=["token"],
+        )
+        dec_converter.add_exported_program(
+            exported_x4_decoder,
+            entrypoint_name="decode_x4",
+            input_names=["input_id", "position_id", "enc_len", "cross_k", "cross_v"],
+            state_names=["k_cache", "v_cache"],
+            output_names=["tokens"],
+        )
+        dec_program = dec_converter.to_coreai()
+        dec_program.optimize()
+        if dec_path.exists():
+            import shutil
+            shutil.rmtree(dec_path)
+            print(f"Replaced existing {dec_path}")
+        dec_program.save_asset(dec_path)
+        print(f"Wrote {dec_path} (decoder-only companion for per-function placement).")
     return 0
 
 

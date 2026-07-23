@@ -12,7 +12,13 @@ from pathlib import Path
 import coreai_torch
 import torch
 
-from .export import export_encoder, export_joiner, export_prediction
+from .export import (
+    export_enc_projector,
+    export_encoder,
+    export_join_fused,
+    export_joiner,
+    export_prediction,
+)
 from .extract import extract_modules_from_nemo
 from .models import (
     ParakeetEncoderForCoreAI,
@@ -78,8 +84,20 @@ def main(argv: list[str] | None = None) -> int:
         default="none",
         help="Encoder compression: palette4/palette6 = the Neural-Engine RAM+speed win.",
     )
+    parser.add_argument(
+        "--windows",
+        default="125,250,375,500,750,1000",
+        help=(
+            "Comma-separated encoder mel-frame windows. The traced encoder always "
+            "runs its full window, so a short clip in a long window burns compute "
+            "on zero padding; exporting several windows lets the runtime pick the "
+            "smallest >= the clip's frames. The LARGEST keeps the name 'encode' "
+            "(runtime/back-compat contract); smaller ones are 'encode_<frames>'."
+        ),
+    )
     args = parser.parse_args(argv)
     output_path = Path(args.output)
+    windows = sorted({int(w) for w in args.windows.split(",")})
 
     quantize_encoder = _build_quantizer(args.quantize)  # before NeMo import
 
@@ -93,17 +111,21 @@ def main(argv: list[str] | None = None) -> int:
         encoder_wrapper = quantize_encoder(encoder_wrapper)
         print(f"Applied {args.quantize} compression to the encoder.")
 
-    exported_encoder = export_encoder(encoder_wrapper)
     exported_prediction = export_prediction(prediction_wrapper)
     exported_joiner = export_joiner(joiner_wrapper)
 
     converter = coreai_torch.TorchConverter()
-    converter.add_exported_program(
-        exported_encoder,
-        entrypoint_name=ENCODE_FN,
-        input_names=["mel", "mel_length"],
-        output_names=["enc_out"],
-    )
+    # One encoder program per window; the largest is the canonical `encode`
+    # (existing runtime contract), smaller windows are `encode_<frames>`.
+    for w in windows:
+        name = ENCODE_FN if w == windows[-1] else f"{ENCODE_FN}_{w}"
+        converter.add_exported_program(
+            export_encoder(encoder_wrapper, mel_frames=w),
+            entrypoint_name=name,
+            input_names=["mel", "mel_length"],
+            output_names=["enc_out"],
+        )
+        print(f"Exported encoder window {w} frames -> function '{name}'")
     converter.add_exported_program(
         exported_prediction,
         entrypoint_name=PREDICT_STEP_FN,
@@ -118,8 +140,35 @@ def main(argv: list[str] | None = None) -> int:
         output_names=["logits"],  # [B, T, U, vocab+1+num_durations]
     )
 
+    # Fused decode pair: project the whole clip's enc_out once, then a join
+    # whose two argmaxes run in-graph — per-step host I/O drops from a
+    # [1,1,1,8198] logits readback to two int32 scalars.
+    from .models import ParakeetEncProjectorForCoreAI, ParakeetJoinFusedForCoreAI
+
+    projector_wrapper = ParakeetEncProjectorForCoreAI(modules["joiner"]).eval()
+    fused_wrapper = ParakeetJoinFusedForCoreAI(modules["joiner"]).eval()
+    print("Exporting project_enc (T=125) + join_fused ...")
+    converter.add_exported_program(
+        export_enc_projector(projector_wrapper),
+        entrypoint_name="project_enc",
+        input_names=["enc_out"],
+        output_names=["enc_proj"],
+    )
+    converter.add_exported_program(
+        export_join_fused(fused_wrapper),
+        entrypoint_name="join_fused",
+        input_names=["enc_proj_t", "pred_emb"],
+        output_names=["token", "duration"],
+    )
+
     ai_program = converter.to_coreai()
     ai_program.optimize()
+    if output_path.exists():
+        # save_asset refuses to overwrite (FileExistsError on main.mlirb);
+        # treat the output like any build artifact and replace it.
+        import shutil
+        shutil.rmtree(output_path)
+        print(f"Replaced existing {output_path}")
     ai_program.save_asset(output_path)
 
     # Bundle the SentencePiece vocab inside the .aimodel so the runtime is

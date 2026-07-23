@@ -46,3 +46,16 @@ def export_joiner(
     example_pred_emb = torch.zeros(1, 1, pred_hidden, dtype=torch.float32)
     exported = torch.export.export(wrapper, args=(example_enc_step, example_pred_emb))
     return exported.run_decompositions(coreai_torch.get_decomp_table())
+
+
+def export_enc_projector(wrapper, t_out: int = 125, d_model: int = 1024) -> ExportedProgram:
+    example_enc = torch.zeros(1, t_out, d_model, dtype=torch.float32)
+    exported = torch.export.export(wrapper, args=(example_enc,))
+    return exported.run_decompositions(coreai_torch.get_decomp_table())
+
+
+def export_join_fused(wrapper, joint_hidden: int = 640, pred_hidden: int = 640) -> ExportedProgram:
+    example_enc_proj_t = torch.zeros(1, 1, joint_hidden, dtype=torch.float32)
+    example_pred_emb = torch.zeros(1, 1, pred_hidden, dtype=torch.float32)
+    exported = torch.export.export(wrapper, args=(example_enc_proj_t, example_pred_emb))
+    return exported.run_decompositions(coreai_torch.get_decomp_table())

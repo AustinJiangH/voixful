@@ -7,11 +7,17 @@ license = "Apache-2.0"
 dependencies = [
     # Cohere Transcribe ships custom modeling code loaded via trust_remote_code,
     # so it runs under HF transformers (not NeMo like Nemotron/Parakeet).
-    "transformers>=4.46",
+    # <5: transformers 5.x breaks this model's trust_remote_code load
+    # (_adjust_missing_and_unexpected_keys: list | set TypeError).
+    "transformers>=4.46,<5",
     "coreai-torch",
     "torch>=2.5,<3.0",
     "numpy",
     "huggingface-hub",          # gated model: needs `hf auth login` / HF_TOKEN
+    "librosa",                  # required by the model's trust_remote_code modeling file
+    "soundfile",                # (feature-extraction imports; convert never decodes audio)
+    "sentencepiece",            # trust_remote_code tokenizer requires these two at
+    "protobuf",                 # load time (slow-tokenizer path)
     "pydantic>=2.6,<2.10",      # required for the coreai_opt --quantize path
     # coreai-optimization is needed for --quantize (install separately: `uv pip install --pre coreai-opt`)
 ]

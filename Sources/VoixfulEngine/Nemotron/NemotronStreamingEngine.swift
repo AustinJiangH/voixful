@@ -55,7 +55,19 @@ public actor NemotronStreamingEngine {
     // MARK: - Sessions
 
     private let preprocess: PreprocessSession?
+    /// 256-frame preprocessor variant; pairs with `encode_256` so the batch
+    /// path halves its encoder invocations (each encode call re-streams the
+    /// full 0.6B encoder weights — fewer, bigger chunks win on bandwidth).
+    private let preprocess256: PreprocessSession?
     private let encoder: EncoderSession
+    /// The multi-function model handle, retained so the batch path can lazily
+    /// open the canonical 128-frame window when the streaming window differs.
+    private let model: AIModel
+    /// Lazily-created canonical-window session for `transcribe(audio:)` —
+    /// `preprocess_audio` emits fixed [1,128,128] mels, so batch always runs
+    /// the 128-frame `encode` regardless of the streaming `ChunkSize`.
+    private var batchEncoder: EncoderSession?
+    private var batchEncoderName: String = ""
     private let prediction: PredictionSession
     private let joiner: JoinerSession
     private let decoder: GreedyRNNTDecoder
@@ -113,15 +125,11 @@ public actor NemotronStreamingEngine {
     /// time we need to repack frames into the encoder's `[1, 128, T]` shape.
     private static let nMels: Int = 128
 
-    /// The fixed mel-frame count the converted `.aimodel` accepts. The current
-    /// convert.py pins T=128 (smallest multiple of 8 ≥ 121, the streaming-cfg
-    /// minimum) because coreai_torch 0.4.0 hits a dynamic-shape lowering bug
-    /// on `aten.repeat`. Once that's fixed upstream we can re-introduce the
-    /// `ChunkSize` dial and export a variable-T encoder.
-    ///
-    /// `ChunkSize` is still surfaced on the public API for forward compat —
-    /// today every chunk-size case routes through this same T=128 hardcode.
-    private static let encoderFramesPerChunk: Int = 128
+    /// Mel frames fed to the encoder per streaming chunk — the frame length of
+    /// the encoder window program selected at init. Multi-window assets let
+    /// `ChunkSize` pick a real cadence (e.g. `encode_32` -> 320 ms partials);
+    /// single-window assets keep the historic 128-frame (1.28 s) cadence.
+    private let encoderFramesPerChunk: Int
 
     // MARK: - Init
 
@@ -162,12 +170,12 @@ public actor NemotronStreamingEngine {
         // after install: ~1s. Every subsequent launch: ~200ms.
         let model: AIModel
         do {
-            if let cached = try AIModelCache.default.model(for: modelURL, options: .default) {
+            if let cached = try AIModelCache.default.model(for: modelURL, options: specializationOptions()) {
                 model = cached
             } else {
                 model = try await AIModel.specialize(
                     contentsOf: modelURL,
-                    options: .default,
+                    options: specializationOptions(),
                     cache: AIModelCache.default,
                     cachePolicy: .persistent
                 )
@@ -187,9 +195,40 @@ public actor NemotronStreamingEngine {
         // the Swift MelExtractor, so a model without the baked preprocessor can
         // still run streaming.
         self.preprocess = try? await PreprocessSession(model: model)
-        self.encoder = try await EncoderSession(model: model)
-        self.prediction = try await PredictionSession(model: model)
-        self.joiner = try await JoinerSession(model: model)
+        self.preprocess256 = try? await PreprocessSession(model: model, frames: 256)
+
+        // Pick the encoder window program for the requested ChunkSize.
+        // `totalFrames` is in 80 ms encoder frames; the mel hop is 10 ms and
+        // the subsampling stack folds 8 mel frames -> 1 encoder frame, so the
+        // needed mel chunk is totalFrames*8. Choose the smallest exported
+        // window that fits; single-window assets fall back to the canonical
+        // 128-frame `encode` (the historic 1.28 s cadence).
+        let names = (try? ModelBackend.assetFunctions(modelURL: modelURL).names) ?? ["encode"]
+        var windows = encodeWindowNames(names)
+        windows.append((frames: 128, name: "encode"))
+        windows.sort { $0.frames < $1.frames }
+        let wantMelFrames = chunkSize.totalFrames * 8
+        let picked = windows.first { $0.frames >= wantMelFrames } ?? (frames: 128, name: "encode")
+        self.encoderFramesPerChunk = picked.frames
+        self.encoder = try await EncoderSession(model: model, functionName: picked.name)
+        self.model = model
+
+        // VOIXFUL_COMPUTE_DECODE: place the tiny predict/join functions on a
+        // different compute unit than the encoder via a second AIModel
+        // instance (plain init — per-function specialization at loadFunction,
+        // so the palettized encoder is never lowered for the pinned unit;
+        // whole-asset specialize with a CPU pin fails on palette4 assets).
+        var decodeModel = model
+        if let opts = decodeSpecializationOptions() {
+            do {
+                decodeModel = try await AIModel(contentsOf: modelURL, options: opts)
+            } catch {
+                throw ASRError.modelLoadFailed(
+                    "decode-model AIModel(contentsOf:) with VOIXFUL_COMPUTE_DECODE failed: \(error)")
+            }
+        }
+        self.prediction = try await PredictionSession(model: decodeModel)
+        self.joiner = try await JoinerSession(model: decodeModel)
 
         // Build the greedy RNN-T decoder. Holds references to prediction and
         // joiner sessions; does NOT hold the encoder (encoder outputs are
@@ -197,7 +236,10 @@ public actor NemotronStreamingEngine {
         // header.
         self.decoder = GreedyRNNTDecoder(
             prediction: self.prediction,
-            joiner: self.joiner
+            joiner: self.joiner,
+            // CPU predict/join when the <asset>.transducer sidecar exists
+            // (dump_transducer.py) — bypasses the per-dispatch floor.
+            cpu: CPUTransducerDecoder(sidecarFor: modelURL)
         )
 
         // Build the mel extractor with PLAN.md §5 defaults (16 kHz, 128 mels,
@@ -281,6 +323,10 @@ public actor NemotronStreamingEngine {
         // Stamp the session start. Used as the reference t=0 for
         // PartialHypothesis.timestamp.
         sessionStartTime = CFAbsoluteTimeGetCurrent()
+
+        // Fresh per-utterance perf ledger (streaming path accumulates into it
+        // across feed() calls; printed at finish() under NEMOTRON_TRACE).
+        lastPerf = PerfCounters()
     }
 
     // MARK: - feed
@@ -321,7 +367,9 @@ public actor NemotronStreamingEngine {
         // the mel extractor and clear it.
         let newAudio = audioBuffer
         audioBuffer.removeAll(keepingCapacity: true)
+        lastPerf.audioMs += Double(samples.count) / 16.0  // ms at 16 kHz
 
+        let melStart = Date()
         if let newMelFrames = await melExtractor.extractStreaming(samples: newAudio) {
             // newMelFrames is row-major [nMels × T_new] flattened. Number of
             // frames = total elements / nMels.
@@ -352,9 +400,11 @@ public actor NemotronStreamingEngine {
             }
         }
 
+        lastPerf.preprocessMs += Date().timeIntervalSince(melStart) * 1000
+
         // Now consume as many chunks as we have. Each chunk needs
         // `chunkSize.totalFrames` mel frames.
-        let framesPerChunk = Self.encoderFramesPerChunk
+        let framesPerChunk = encoderFramesPerChunk
         var partials: [PartialHypothesis] = []
 
         while melBufferFrames >= framesPerChunk {
@@ -376,11 +426,16 @@ public actor NemotronStreamingEngine {
             // would also take a `lang_id` here.
             var melLength = NDArray(shape: [1], scalarType: .int32)
             melLength.setInt32(at: 0, to: Int32(framesPerChunk))
+            let encStart = Date()
             let encOut = try await encoder.forward(mel: chunkMel, melLength: melLength)
+            lastPerf.encodeMs += Date().timeIntervalSince(encStart) * 1000
 
             // Drive the greedy decoder over the encoder output's time axis.
             // Returns just the tokens emitted by THIS decode call.
+            let decStart = Date()
             let newTokens = try await decoder.decode(encoderOutput: encOut)
+            lastPerf.decodeMs += Date().timeIntervalSince(decStart) * 1000
+            lastPerf.chunkCount += 1
 
             // Track the utterance-wide accumulator for the final transcript.
             allEmittedTokens.append(contentsOf: newTokens)
@@ -398,7 +453,9 @@ public actor NemotronStreamingEngine {
             // cumulative. If the consumer expects incremental, change this
             // to `tokenizer.decode(tokens: newTokens, ...)` and update
             // Types.swift in lockstep.
+            let detokStart = Date()
             let text = await tokenizer.decode(tokens: allEmittedTokens, stripLangTags: true)
+            lastPerf.detokMs += Date().timeIntervalSince(detokStart) * 1000
 
             // Stable-until-token: the right context for THIS chunk is
             // `chunkSize.attContextRight` frames; the tokens emitted at the
@@ -456,20 +513,64 @@ public actor NemotronStreamingEngine {
         public var encodeMs: Double = 0
         public var decodeMs: Double = 0
         public var copyMs: Double = 0
+        public var detokMs: Double = 0
         public var chunkCount: Int = 0
         public var audioMs: Double = 0
     }
     public private(set) var lastPerf = PerfCounters()
+
+    /// `NEMOTRON_TRACE=1` prints a per-utterance stage breakdown to stderr,
+    /// mirroring `COHERE_TRACE` / `PARAKEET_TRACE`. Covers both the streaming
+    /// path (accumulated across `feed()` calls, printed at `finish()`) and the
+    /// batch `transcribe(audio:)` path.
+    private static let trace = ProcessInfo.processInfo.environment["NEMOTRON_TRACE"] != nil
+
+    private func printPerfTrace(path: String) {
+        guard Self.trace else { return }
+        let p = lastPerf
+        let line = String(
+            format: "[nemotron/timing] %@ audio=%.1fs | mel=%.0fms encode=%.0fms "
+                + "decode=%.0fms detok=%.0fms copy=%.0fms (%d chunks)\n",
+            path, p.audioMs / 1000, p.preprocessMs, p.encodeMs,
+            p.decodeMs, p.detokMs, p.copyMs, p.chunkCount)
+        FileHandle.standardError.write(Data(line.utf8))
+    }
 
     public func transcribe(audio: [Float], warmup: Bool = true) async throws -> Transcript {
         await self.start()
         var perf = PerfCounters()
         perf.audioMs = Double(audio.count) / 16.0  // ms (16 kHz)
 
-        let chunkSamples = PreprocessSession.chunkSamples          // 20320
+        // Pair the largest available (preprocessor variant, encoder window):
+        // 256-frame chunks halve encoder invocations vs the canonical 128.
+        let pre: PreprocessSession
+        let encoderName: String
+        let framesPerChunk: Int
+        // 256 is opt-in (VOIXFUL_BATCH_CHUNK=256): ~25% faster encode on the
+        // 5.5 s fixture (160 -> ~120 ms) but bigger chunk steps cost mild
+        // segmentation quirks at boundaries; batch defaults to quality.
+        let want256 = ProcessInfo.processInfo.environment["VOIXFUL_BATCH_CHUNK"] == "256"
+        if want256, let p256 = preprocess256 {
+            pre = p256; encoderName = "encode_256"; framesPerChunk = 256
+        } else if let p = preprocess {
+            pre = p; encoderName = "encode"; framesPerChunk = 128
+        } else {
+            throw ASRError.missingFunction("preprocess_audio")
+        }
+        let chunkSamples = pre.chunkSamples
         let leftContext = PreprocessSession.leftContextSamples     // 512
-        let inputSamples = PreprocessSession.audioSamples          // 20832
-        let framesPerChunk = Self.encoderFramesPerChunk
+        let inputSamples = pre.audioSamples
+        let encoder: EncoderSession
+        if framesPerChunk == encoderFramesPerChunk {
+            encoder = self.encoder
+        } else {
+            if batchEncoder == nil || batchEncoderName != encoderName {
+                batchEncoder = try await EncoderSession(model: model, functionName: encoderName)
+                batchEncoderName = encoderName
+            }
+            await batchEncoder!.reset()
+            encoder = batchEncoder!
+        }
 
         // Prepend a chunk of silence to warm the encoder's cache. Costs ~30 ms
         // (one extra chunk of preprocess + encoder + decoder); recovers the
@@ -530,10 +631,7 @@ public actor NemotronStreamingEngine {
             let cpyMs = Date().timeIntervalSince(cpyStart) * 1000
 
             let preStart = Date()
-            guard let preprocess else {
-                throw ASRError.missingFunction("preprocess_audio")
-            }
-            let mel = try await preprocess.extract(audio: audioND, length: lengthND)
+            let mel = try await pre.extract(audio: audioND, length: lengthND)
             let preMs = Date().timeIntervalSince(preStart) * 1000
 
             let encStart = Date()
@@ -589,7 +687,10 @@ public actor NemotronStreamingEngine {
         }
 
         lastPerf = perf
+        let detokStart = Date()
         let fullText = await tokenizer.decode(tokens: allEmittedTokens, stripLangTags: true)
+        lastPerf.detokMs += Date().timeIntervalSince(detokStart) * 1000
+        printPerfTrace(path: "batch")
         let segment = Transcript.Segment(
             text: fullText,
             startTime: 0,
@@ -610,7 +711,7 @@ public actor NemotronStreamingEngine {
         // tail-token drift caused by this padding. If NeMo's reference uses
         // a different padding convention (e.g., reflect, or right-context
         // truncation with a shorter final chunk), match it here.
-        let framesPerChunk = Self.encoderFramesPerChunk
+        let framesPerChunk = encoderFramesPerChunk
         if melBufferFrames > 0 && melBufferFrames < framesPerChunk {
             // Zero-pad the mel buffer in row-major order: each row m gets
             // (framesPerChunk - melBufferFrames) zeros appended after its
@@ -637,8 +738,13 @@ public actor NemotronStreamingEngine {
             // would also take a `lang_id` here.
             var melLength = NDArray(shape: [1], scalarType: .int32)
             melLength.setInt32(at: 0, to: Int32(framesPerChunk))
+            let encStart = Date()
             let encOut = try await encoder.forward(mel: chunkMel, melLength: melLength)
+            lastPerf.encodeMs += Date().timeIntervalSince(encStart) * 1000
+            let decStart = Date()
             let newTokens = try await decoder.decode(encoderOutput: encOut)
+            lastPerf.decodeMs += Date().timeIntervalSince(decStart) * 1000
+            lastPerf.chunkCount += 1
             allEmittedTokens.append(contentsOf: newTokens)
         }
 
@@ -646,7 +752,10 @@ public actor NemotronStreamingEngine {
         // the final transcript since callers requesting `finish()` expect
         // the clean text; the language is surfaced separately in
         // `Transcript.language`.
+        let detokStart = Date()
         let fullText = await tokenizer.decode(tokens: allEmittedTokens, stripLangTags: true)
+        lastPerf.detokMs += Date().timeIntervalSince(detokStart) * 1000
+        printPerfTrace(path: "stream")
 
         // Build a single placeholder segment spanning [0, now]. Per-token
         // time-aligned segments are a Phase F follow-up — the public shape

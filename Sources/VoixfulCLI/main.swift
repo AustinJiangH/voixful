@@ -108,6 +108,13 @@ struct Transcribe: AsyncParsableCommand {
 
         let (inputSequence, inputBuilder) = AsyncStream<AnalyzerInput>.makeStream()
         try await analyzer.start(inputSequence: inputSequence)
+        // VOIXFUL_SETTLE_MS: sleep between prepare() and feeding audio to
+        // emulate session-style use (mic capture, app idle), where prewarmed
+        // function loads (FullContextEngine.prewarm) complete before the first
+        // utterance. Benchmarking aid; unset = one-shot behavior.
+        if let ms = ProcessInfo.processInfo.environment["VOIXFUL_SETTLE_MS"].flatMap(UInt64.init) {
+            try await Task.sleep(nanoseconds: ms * 1_000_000)
+        }
         inputBuilder.yield(AnalyzerInput(buffer: buffer, bufferStartTime: .zero))
         inputBuilder.finish()
         try await analyzer.finalizeAndFinishThroughEndOfInput()

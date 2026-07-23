@@ -34,9 +34,9 @@ public actor EncoderSession {
 
     // MARK: - Init
 
-    public init(model: AIModel) async throws {
-        guard let fn = try model.loadFunction(named: "encode") else {
-            throw ASRError.missingFunction("encode")
+    public init(model: AIModel, functionName: String = "encode") async throws {
+        guard let fn = try model.loadFunction(named: functionName) else {
+            throw ASRError.missingFunction(functionName)
         }
         self.function = fn
 

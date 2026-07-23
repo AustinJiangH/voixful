@@ -23,7 +23,6 @@ from .models import (
 # checkpoint once the upstream class lands in a NeMo release.
 DEFAULT_MODEL_ID = "nvidia/nemotron-speech-streaming-en-0.6b"
 DEFAULT_OUTPUT = "./nemotron-streaming.aimodel"
-DEFAULT_MAX_CHUNK_FRAMES = 256  # Headroom — the real model wants min 121 frames per its streaming cfg.
 
 # The three named functions packed into a single multi-function .aimodel per
 # PLAN.md §3 Step 4 and Decision Log #3.
@@ -44,10 +43,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--model-id", default=DEFAULT_MODEL_ID)
     parser.add_argument("--output", default=DEFAULT_OUTPUT)
     parser.add_argument(
-        "--max-chunk-frames",
-        type=int,
-        default=DEFAULT_MAX_CHUNK_FRAMES,
-        help="Upper bound on dynamic mel time axis (10 ms hop). 112 == 1120 ms.",
+        "--windows",
+        default="32,72,128,256",
+        help=(
+            "Comma-separated encoder chunk lengths in mel frames (10 ms hop), "
+            "each exported as its own fixed-shape program against the SHARED "
+            "streaming caches. 128 is required (the canonical 'encode' — "
+            "runtime back-compat contract); others become 'encode_<frames>'. "
+            "Small windows are traced under their matching TRAINED att-context "
+            "tier (32 -> [70,1] the 160 ms tier; 72 -> [70,6] the 560 ms "
+            "tier); tracing a small chunk under the default [70,13] config "
+            "produces garbage (valid_out_len bookkeeping assumes 112-mel "
+            "chunks — measured WER collapse). 256 == batch-throughput chunk."
+        ),
     )
     parser.add_argument(
         "--quantize",
@@ -152,30 +160,57 @@ def main(argv: list[str] | None = None) -> int:
         encoder_wrapper = quantize_encoder(encoder_wrapper)
         print("Applied INT8 weight-only quantization to the encoder (presets.w8).")
 
-    # Step (c): torch.export each.
-    exported_encoder = export_encoder(encoder_wrapper, max_chunk_frames=args.max_chunk_frames)
+    # Step (c): torch.export the shared modules; the encoder once per window.
+    windows = sorted({int(w) for w in args.windows.split(",")})
+    assert 128 in windows, "--windows must include 128 (the canonical 'encode' contract)"
     exported_prediction = export_prediction(prediction_wrapper)
     exported_joiner = export_joiner(joiner_wrapper)
 
     # Step (d): pack into one multi-function .aimodel per PLAN.md §3 Step 4.
     converter = coreai_torch.TorchConverter()
 
-    converter.add_exported_program(
-        exported_encoder,
-        entrypoint_name=ENCODE_FN,
-        # English-only checkpoint has no language conditioning; input is
-        # (mel_chunk, mel_length). The multilingual variant adds a lang_id
-        # input — re-add when switching back to the 40-language checkpoint.
-        input_names=["mel_chunk", "mel_length"],
-        # Three streaming caches per the verified shapes; no `pre_cache` in
-        # this checkpoint (see models.py header).
-        state_names=[
-            "cache_last_channel",
-            "cache_last_time",
-            "cache_last_channel_len",
-        ],
-        output_names=["enc_out"],
-    )
+    # Per-window attention context: small windows use the checkpoint's TRAINED
+    # tier whose chunk (+9-frame pre-encode cache) fits the window; >=128-mel
+    # windows keep the checkpoint default [70, 13] (the 1120 ms tier). The
+    # streaming caches are left-context-shaped (70) so all tiers share state.
+    att_by_window = {32: [70, 1], 72: [70, 6]}
+    default_att = list(encoder_wrapper.inner.att_context_size)
+    for w in windows:
+        name = ENCODE_FN if w == 128 else f"{ENCODE_FN}_{w}"
+        att = att_by_window.get(w, default_att)
+        encoder_wrapper.inner.set_default_att_context_size(att)
+        encoder_wrapper.inner.setup_streaming_params()
+        if w > 128:
+            # Larger-than-default chunks: keep the trained [70,13] attention
+            # masks and 70-frame cache, but fix the chunk bookkeeping so the
+            # graph returns ALL of the window's valid frames. Without this the
+            # cfg's valid_out_len stays 14 (tuned to 112-mel chunks) and a
+            # 256-mel chunk silently loses 16 of its 30 output frames —
+            # measured as words dropped at every chunk boundary.
+            enc_frames = w // 8
+            cfg = encoder_wrapper.inner.streaming_cfg
+            cfg.chunk_size = [w - 7, w]
+            cfg.shift_size = [w - 7, w]
+            cfg.valid_out_len = enc_frames
+        print(f"Exporting encoder chunk window {w} frames (att_context={att}) -> function '{name}' ...")
+        converter.add_exported_program(
+            export_encoder(encoder_wrapper, chunk_frames=w),
+            entrypoint_name=name,
+            # English-only checkpoint has no language conditioning; input is
+            # (mel_chunk, mel_length). The multilingual variant adds a lang_id
+            # input — re-add when switching back to the 40-language checkpoint.
+            input_names=["mel_chunk", "mel_length"],
+            # Three streaming caches per the verified shapes; no `pre_cache` in
+            # this checkpoint (see models.py header). All windows SHARE these
+            # states — cache shapes derive from the left context, which is
+            # window-invariant.
+            state_names=[
+                "cache_last_channel",
+                "cache_last_time",
+                "cache_last_channel_len",
+            ],
+            output_names=["enc_out"],
+        )
     converter.add_exported_program(
         exported_prediction,
         entrypoint_name=PREDICT_STEP_FN,
@@ -190,6 +225,35 @@ def main(argv: list[str] | None = None) -> int:
         output_names=["logits"],
     )
 
+    # Baked audio->mel preprocessor (batch path). NeMo's own preprocessor
+    # doesn't survive torch.export; preproc_matmul re-expresses it with fixed
+    # shapes + matmuls, parity-tested against the NeMo featurizer (7e-5).
+    # Its presence flips the CLI/engine into the pipelined batch mode
+    # (encode(N+1) overlapped with decode(N)).
+    from .preproc_matmul import NemotronPreprocessorForCoreAI, audio_samples
+
+    featurizer = modules["preprocessor"].featurizer
+    featurizer.dither = 0.0
+    # 128-frame canonical + a 256-frame variant pairing with encode_256 so the
+    # batch path can halve its encoder invocations.
+    for frames, name in [(128, "preprocess_audio"), (256, "preprocess_audio_256")]:
+        n = audio_samples(frames)
+        preproc_wrapper = NemotronPreprocessorForCoreAI(featurizer, out_frames=frames).eval()
+        print(f"Exporting {name} (matmul mel, {n} samples -> [1,128,{frames}]) ...")
+        exported_preproc = torch.export.export(
+            preproc_wrapper,
+            args=(
+                torch.zeros(1, n, dtype=torch.float32),
+                torch.tensor([n], dtype=torch.int32),
+            ),
+        ).run_decompositions(coreai_torch.get_decomp_table())
+        converter.add_exported_program(
+            exported_preproc,
+            entrypoint_name=name,
+            input_names=["audio", "audio_length"],
+            output_names=["mel"],
+        )
+
     # VERIFY: add_exported_program kwargs — PLAN.md §3 Step 4 snippet does not show a
     # `entrypoint_name=` keyword explicitly. The WWDC 2026 "Dive into Core AI" session
     # demonstrated multi-function .aimodel packing; confirm the exact keyword name
@@ -199,6 +263,12 @@ def main(argv: list[str] | None = None) -> int:
     # PLAN.md §3 Step 5: `coreai_opt` is NOT invoked here. FP16 default.
     ai_program = converter.to_coreai()
     ai_program.optimize()
+    if output_path.exists():
+        # save_asset refuses to overwrite (FileExistsError on main.mlirb);
+        # treat the output like any build artifact and replace it.
+        import shutil
+        shutil.rmtree(output_path)
+        print(f"Replaced existing {output_path}")
     ai_program.save_asset(output_path)
 
     # Bundle the SentencePiece vocab inside the .aimodel so the runtime is

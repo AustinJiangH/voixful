@@ -25,6 +25,11 @@ public protocol FullContextEngine: Actor {
     init(modelURL: URL, piecesURL: URL) async throws
     func transcribe(audio: [Float]) async throws -> Transcript
 
+    /// Kick off background loads of the inference functions a session will
+    /// most likely need (returns immediately). Called by `prepare()` so weight
+    /// materialization overlaps audio capture instead of the first transcribe.
+    func prewarm()
+
     /// Human-readable model name (e.g. "Parakeet TDT 0.6B").
     static var displayName: String { get }
     /// Suffix for the reverse-DNS module id: `com.voixful.transcriber.<suffix>`.
@@ -80,6 +85,8 @@ public actor FullContextTranscriber<Engine: FullContextEngine>: Transcribing {
         } catch {
             throw VoixfulError.engine("could not load \(Engine.displayName) engine: \(error)")
         }
+        // Non-blocking: spawns background function loads and returns.
+        await engine?.prewarm()
     }
 
     public func consume(_ input: AnalyzerInput) async throws {
