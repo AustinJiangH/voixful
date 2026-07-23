@@ -14,7 +14,7 @@ import CoreAI
 import Foundation
 
 public enum ModelBackend: String, Sendable, CaseIterable {
-    case nemotron, parakeet, cohere, granite
+    case nemotron, parakeet, cohere, granite, canary
 }
 
 extension ModelBackend {
@@ -44,8 +44,12 @@ extension ModelBackend {
     /// decoders (decode_x4/decode_step_fused); `decode_step` is the legacy
     /// stateless program, exported only under `--legacy-decoders`.
     public static func classify(_ fns: AssetFunctions) -> ModelBackend {
-        // Granite NAR: single-pass LLM edit entrypoints (edit_<A>_<U>). Checked
-        // first — its encode_<F> functions are stateless like Parakeet's.
+        // Canary-Qwen SALM: AR Qwen3 step functions. Checked first — its
+        // encode_<T> functions are stateless like Parakeet's.
+        if fns.names.contains("step_asr") {
+            return .canary
+        }
+        // Granite NAR: single-pass LLM edit entrypoints (edit_<A>_<U>).
         if fns.names.contains(where: { $0.hasPrefix("edit_") }) {
             return .granite
         }

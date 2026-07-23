@@ -20,6 +20,7 @@ let package = Package(
         .library(name: "VoixfulParakeetTDT", targets: ["VoixfulParakeetTDT"]),
         .library(name: "VoixfulCohereTranscribe", targets: ["VoixfulCohereTranscribe"]),
         .library(name: "VoixfulGraniteNAR", targets: ["VoixfulGraniteNAR"]),
+        .library(name: "VoixfulCanaryQwen", targets: ["VoixfulCanaryQwen"]),
         // Shared full-context (batch) transcriber lifecycle (Parakeet + Cohere).
         .library(name: "VoixfulFullContext", targets: ["VoixfulFullContext"]),
         // Brand CLI: `voixful transcribe …`.
@@ -69,6 +70,10 @@ let package = Package(
             name: "VoixfulGraniteNAR",
             dependencies: ["VoixfulSpeech", "VoixfulEngine", "VoixfulFullContext"]
         ),
+        .target(
+            name: "VoixfulCanaryQwen",
+            dependencies: ["VoixfulSpeech", "VoixfulEngine", "VoixfulFullContext"]
+        ),
 
         // MARK: Brand CLI
         .executableTarget(
@@ -80,6 +85,7 @@ let package = Package(
                 "VoixfulParakeetTDT",
                 "VoixfulCohereTranscribe",
                 "VoixfulGraniteNAR",
+                "VoixfulCanaryQwen",
                 "VoixfulEngine",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ],

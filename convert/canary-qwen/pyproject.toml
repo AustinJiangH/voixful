@@ -1,0 +1,25 @@
+[project]
+name = "canary-convert"
+version = "0.1.0"
+description = "NVIDIA Canary-Qwen 2.5B (SALM: Conformer + Qwen3-1.7B) -> torch.export -> coreai_torch -> Core AI .aimodel. See ./README.md."
+requires-python = ">=3.11"
+license = "Apache-2.0"
+dependencies = [
+    # SALM lives in nemo.collections.speechlm2 — needs NeMo >= 2.5.
+    "nemo-toolkit[asr]>=2.5.0",
+    "coreai-torch>=0.4.1",
+    "torch>=2.5,<3.0",
+    "numpy",
+    "soundfile",
+    "peft",                     # LoRA adapter (merge for ASR mode, drop for LLM mode)
+    "sacrebleu",                # speechlm2 import-time deps not covered by [asr]
+    "jiwer",
+    "transformers",             # Qwen3 backbone + tokenizer (NeMo-compatible version)
+    "huggingface-hub",
+    "pydantic>=2.6,<2.10",      # required for the coreai_opt --quantize path
+    # coreai-opt is needed for --quantize (install separately: `uv pip install --pre coreai-opt`)
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
