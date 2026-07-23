@@ -37,7 +37,7 @@ The Swift package layers them behind one model-agnostic façade:
   `VoixfulSpeechModule` / `Transcribing` protocols, `AnalyzerInput`,
   `TranscriptionResult`. Depends on no model.
 - **`VoixfulEngine`** — the engines themselves, organized per architecture under
-  `Nemotron/`, `Parakeet/`, `Cohere/`, and `Shared/`.
+  `Nemotron/`, `Parakeet/`, `Cohere/`, `Granite/`, `Canary/`, and `Shared/`.
 - **`VoixfulNemotronStreaming`** / **`VoixfulParakeetTDT`** / **`VoixfulCohereTranscribe`**
   / **`VoixfulGraniteNAR`** / **`VoixfulCanaryQwen`** — thin per-architecture
   façade targets, each exposing a `Transcribing` conformer over its engine.
@@ -59,7 +59,7 @@ swift build -c release
 ```
 
 `voixful transcribe` **auto-detects** the backend from the `.aimodel`; override
-with `--backend nemotron|parakeet|cohere` if needed.
+with `--backend nemotron|parakeet|cohere|granite|canary` if needed.
 
 The model `.aimodel` is **not** committed (it's gitignored, ~hundreds of MB to
 GBs). Get it from Hugging Face (see [Distribution](#distribution)) or regenerate
