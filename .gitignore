@@ -33,3 +33,7 @@ models/
 # IDE
 .vscode/
 .idea/
+
+# Claude Code: commit skills/, ignore local session state
+.claude/scheduled_tasks.lock
+.claude/settings.local.json
