@@ -44,10 +44,13 @@ public actor ParakeetTDTEngine {
     private static let melFrames = 1000          // fixed encoder mel length (convert.py)
     private static let nMels = 128
     private static let dModel = 1024
-    private static let vocab = 8192
-    private static let blankId: Int32 = 8192     // vocab is blank id (token logits = vocab+1)
-    private static let tokenLogits = 8193
     private static let durations: [Int] = [0, 1, 2, 3, 4]
+    // Vocab-dependent ids come from the asset's pieces.txt: v3 ships 8192
+    // SentencePiece tokens, v2 ships 1024. blank = vocab (embedding padding_idx);
+    // token logits = vocab + 1; joint output = tokenLogits + 5 durations.
+    private let vocab: Int
+    private let blankId: Int32
+    private let tokenLogits: Int
     private static let maxSymbolsPerStep = 10
     private static let traceDecode = ProcessInfo.processInfo.environment["PARAKEET_TRACE"] != nil
 
@@ -86,10 +89,16 @@ public actor ParakeetTDTEngine {
         self.joiner = try await JoinerSession(model: decodeModel)
         let tokenizer = try SentencePieceTokenizer(piecesURL: piecesURL)
         let pieceCount = tokenizer.count
-        guard pieceCount == Self.vocab else {
+        self.vocab = pieceCount
+        self.blankId = Int32(pieceCount)
+        self.tokenLogits = pieceCount + 1
+        // The CPU-decode sidecar carries its own vocab; a mismatch with
+        // pieces.txt means asset and sidecar are from different checkpoints —
+        // fail here rather than decode garbage.
+        if let cpu = cpuDecoder, cpu.tokenLogits != pieceCount + 1 {
             throw ASRError.modelLoadFailed(
-                "vocab mismatch: \(piecesURL.lastPathComponent) has \(pieceCount) pieces, "
-                + "expected \(Self.vocab) for Parakeet — wrong --pieces / pieces.txt?")
+                "sidecar/vocab mismatch: transducer sidecar has \(cpu.tokenLogits) token "
+                + "logits but pieces.txt has \(pieceCount) pieces (expected \(pieceCount + 1))")
         }
         self.tokenizer = tokenizer
         // Parakeet's preprocessor is `torch.stft(center=True)` with win<n_fft, so
@@ -142,7 +151,7 @@ public actor ParakeetTDTEngine {
         // `padding_idx = blank`, so feeding the blank token produces exactly that
         // zero-embedding input → the correct g_0. Without this the TDT joint emits
         // blank through the start of the utterance (the LM prior never engages).
-        try await prediction.step(token: Self.blankId)
+        try await prediction.step(token: blankId)
         let t0 = CFAbsoluteTimeGetCurrent()
 
         // Mel → fixed-window NDArray (pad/truncate the time axis). Pick the
@@ -249,13 +258,13 @@ public actor ParakeetTDTEngine {
                 var symbols = 0
                 while true {
                     let (tok, skip) = cpu.join(encProjT: base.advanced(by: t * strides[1]))
-                    if tok != Self.blankId {
+                    if tok != blankId {
                         emitted.append(tok)
                         cpu.step(token: tok)
                         symbols += 1
                     }
                     if skip > 0 { t += skip; break }
-                    if tok == Self.blankId || symbols >= Self.maxSymbolsPerStep { t += 1; break }
+                    if tok == blankId || symbols >= Self.maxSymbolsPerStep { t += 1; break }
                 }
             }
         }
@@ -317,7 +326,7 @@ public actor ParakeetTDTEngine {
                 tokND.view(as: Int32.self).withUnsafePointer { p, _, _ in tok = p[0] }
                 durND.view(as: Int32.self).withUnsafePointer { p, _, _ in skip = Int(p[0]) }
 
-                if tok != Self.blankId {
+                if tok != blankId {
                     emitted.append(tok)
                     try await prediction.step(token: tok)
                     symbols += 1
@@ -329,7 +338,7 @@ public actor ParakeetTDTEngine {
                     t += skip
                     break
                 }
-                if tok == Self.blankId || symbols >= Self.maxSymbolsPerStep {
+                if tok == blankId || symbols >= Self.maxSymbolsPerStep {
                     t += 1
                     break
                 }
@@ -370,17 +379,17 @@ public actor ParakeetTDTEngine {
                 logits.view(as: Float.self).withUnsafePointer { ptr, _, _ in
                     var maxV: Float = 0
                     var maxI: vDSP_Length = 0
-                    vDSP_maxvi(ptr, 1, &maxV, &maxI, vDSP_Length(Self.tokenLogits))
+                    vDSP_maxvi(ptr, 1, &maxV, &maxI, vDSP_Length(tokenLogits))
                     tok = Int32(maxI)
                     var durV: Float = -.infinity
                     for j in 0..<Self.durations.count {
-                        let v = ptr[Self.tokenLogits + j]
+                        let v = ptr[tokenLogits + j]
                         if v > durV { durV = v; durIdx = j }
                     }
                 }
                 let skip = Self.durations[durIdx]
 
-                if tok != Self.blankId {
+                if tok != blankId {
                     emitted.append(tok)
                     try await prediction.step(token: tok)
                     symbols += 1
@@ -396,7 +405,7 @@ public actor ParakeetTDTEngine {
                 }
                 // skip == 0: stay on the same frame to emit more, unless we hit
                 // a blank or the per-frame cap — then force progress.
-                if tok == Self.blankId || symbols >= Self.maxSymbolsPerStep {
+                if tok == blankId || symbols >= Self.maxSymbolsPerStep {
                     t += 1
                     break
                 }

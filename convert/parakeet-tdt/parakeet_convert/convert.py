@@ -146,7 +146,11 @@ def main(argv: list[str] | None = None) -> int:
     from .models import ParakeetEncProjectorForCoreAI, ParakeetJoinFusedForCoreAI
 
     projector_wrapper = ParakeetEncProjectorForCoreAI(modules["joiner"]).eval()
-    fused_wrapper = ParakeetJoinFusedForCoreAI(modules["joiner"]).eval()
+    # token_logits = vocab + 1 blank; derived, not the v3 default (v2 is 1025).
+    fused_token_logits = modules["joiner"].joint_net[2].out_features - 5
+    fused_wrapper = ParakeetJoinFusedForCoreAI(
+        modules["joiner"], token_logits=fused_token_logits
+    ).eval()
     print("Exporting project_enc (T=125) + join_fused ...")
     converter.add_exported_program(
         export_enc_projector(projector_wrapper),
@@ -174,14 +178,13 @@ def main(argv: list[str] | None = None) -> int:
     # Bundle the SentencePiece vocab inside the .aimodel so the runtime is
     # self-contained (the CLI reads <model>/pieces.txt; a wrong vocab errors).
     pieces = list(modules["tokenizer"].vocab)
-    # Fail-fast: Parakeet-TDT uses an 8192-token SentencePiece vocab. If a model or
-    # tokenizer swap changes this, abort at convert time rather than shipping an asset
-    # the Swift runtime later rejects on a vocab-size mismatch.
-    EXPECTED_VOCAB = 8192
-    assert len(pieces) == EXPECTED_VOCAB, (
-        f"pieces.txt vocab mismatch: got {len(pieces)} pieces, expected "
-        f"{EXPECTED_VOCAB} for Parakeet-TDT. A model or tokenizer swap changed the "
-        "vocab — fix the architecture constants before shipping this asset."
+    # Fail-fast: the joint's output dim must equal vocab+1(blank)+num_durations
+    # (5 for TDT). The Swift runtime derives vocab/blank from pieces.txt, so a
+    # mismatch here would ship an asset it rejects. v3 = 8192 pieces, v2 = 1024.
+    joint_out = modules["joiner"].joint_net[2].out_features
+    assert joint_out == len(pieces) + 1 + 5, (
+        f"joint out dim {joint_out} != vocab {len(pieces)} + 1 + 5 durations — "
+        "model/tokenizer mismatch; fix before shipping this asset."
     )
     (output_path / "pieces.txt").write_text("\n".join(pieces) + "\n", encoding="utf-8")
 

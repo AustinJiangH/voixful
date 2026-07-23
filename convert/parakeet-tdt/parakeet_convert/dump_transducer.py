@@ -36,14 +36,20 @@ def main(argv: list[str] | None = None) -> int:
 
     m = nemo_asr.models.ASRModel.from_pretrained(args.model_id)
     lstm = m.decoder.prediction["dec_rnn"].lstm
+    # Vocab-dependent fields come from the checkpoint (v3: 8192, v2: 1024).
+    vocab = m.tokenizer.vocab_size
+    joint_out = m.joint.joint_net[2].out_features
+    assert joint_out == vocab + 1 + 5, (
+        f"joint out dim {joint_out} != vocab {vocab} + 1 + 5 TDT durations"
+    )
     tensors: list[tuple[str, torch.Tensor]] = [
-        ("embed.weight", m.decoder.prediction["embed"].weight),          # [8193, 640]
+        ("embed.weight", m.decoder.prediction["embed"].weight),          # [vocab+1, 640]
         ("lstm.l0.w_ih", lstm.weight_ih_l0), ("lstm.l0.w_hh", lstm.weight_hh_l0),
         ("lstm.l0.b_ih", lstm.bias_ih_l0), ("lstm.l0.b_hh", lstm.bias_hh_l0),
         ("lstm.l1.w_ih", lstm.weight_ih_l1), ("lstm.l1.w_hh", lstm.weight_hh_l1),
         ("lstm.l1.b_ih", lstm.bias_ih_l1), ("lstm.l1.b_hh", lstm.bias_hh_l1),
         ("joint.pred.weight", m.joint.pred.weight), ("joint.pred.bias", m.joint.pred.bias),
-        ("joint.out.weight", m.joint.joint_net[2].weight),               # [8198, 640]
+        ("joint.out.weight", m.joint.joint_net[2].weight),               # [vocab+6, 640]
         ("joint.out.bias", m.joint.joint_net[2].bias),
     ]
 
@@ -54,8 +60,8 @@ def main(argv: list[str] | None = None) -> int:
     manifest: dict = {
         "format": 1,
         "model_id": args.model_id,
-        "blank_id": 8192,
-        "token_logits": 8193,
+        "blank_id": vocab,
+        "token_logits": vocab + 1,
         "durations": [0, 1, 2, 3, 4],
         "pred_hidden": 640,
         "joint_hidden": 640,
