@@ -18,6 +18,9 @@ Four ASR backends ship today, spanning four architectures:
 - **Granite NAR** — non-autoregressive CTC + single-pass LLM transcript editor
   (`ibm-granite/granite-speech-4.1-2b-nar`, vocab 100352). Two dispatches per
   clip, no decode loop at all.
+- **Canary-Qwen** — SALM: Conformer encoder + Qwen3-1.7B decoder
+  (`nvidia/canary-qwen-2.5b`, vocab 151936). Punctuated + capitalized English
+  transcripts; AR decode (KV-cached prefill/step).
 
 The Swift package layers them behind one model-agnostic façade:
 
@@ -83,6 +86,7 @@ Warm per-utterance numbers, M5 Pro, 5.5 s clip, palette4 assets:
 | Cohere 2B (AED) | ~0.29 s | mel 1 / encode 127 / decode 160 ms | + ~1.1 s one-time encoder window load, hidden by `prepare()` prewarm in session use |
 | Parakeet v2 (English) | ~0.07 s | mel 2 / encode 58 / decode 11 ms | best English WER of the small tier (5.39 leaderboard avg) |
 | Granite NAR 2B | ~0.29 s | encode 115 / edit 170 ms (mel in-graph) | best WER we ship (4.95); NO autoregressive loop — two dispatches per clip; `GRANITE_TRACE=1` |
+| Canary-Qwen 2.5B | ~4 s | encode ~1-2 s / decode ~150 ms/token | best punctuation+casing; decode is state-transfer-bound (235 MB KV round-trip/step) — x4 unrolling + fp16 states are the known fixes; `CANARY_TRACE=1` |
 
 - **Multi-window encoders** (all three backends): the runtime picks the smallest
   exported `encode_<frames>` that fits the clip (Cohere ladder 220–3500, Parakeet
