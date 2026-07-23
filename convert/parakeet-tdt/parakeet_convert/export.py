@@ -18,10 +18,7 @@ from .models import (
 # pad/truncate audio to it at runtime. 1000 frames ≈ 10 s at a 10 ms hop.
 DEFAULT_MEL_FRAMES = 1000
 
-# TDT joint output width = vocab(8192) + 1 blank + 5 durations.
-VOCAB = 8192
-NUM_DURATIONS = 5
-JOINT_OUT = VOCAB + 1 + NUM_DURATIONS  # 8198
+# TDT joint output width = vocab + 1 blank + 5 durations (v3: 8198, v2: 1030).
 
 
 def export_encoder(
