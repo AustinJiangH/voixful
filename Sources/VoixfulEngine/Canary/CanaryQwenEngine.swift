@@ -320,6 +320,17 @@ public actor CanaryQwenEngine {
         var posND = NDArray(shape: [1], scalarType: .int32)
         var pos = promptLen
         while ids.count < maxNew, tok != eosId, pos < maxSeq {
+            // Repetition guard: greedy AR decode loops on non-speech input
+            // ("the rest the rest ..."); at ~150 ms/step a runaway pass costs
+            // ~40 s. Cut when the tail is a short repeating cycle.
+            if ids.count >= 12 {
+                let tail = Array(ids.suffix(12))
+                for period in 1...3 {
+                    if (period..<12).allSatisfy({ tail[$0] == tail[$0 - period] }) {
+                        return ids
+                    }
+                }
+            }
             ids.append(tok)
             tokND.setInt32(at: 0, to: tok)
             posND.setInt32(at: 0, to: Int32(pos))
