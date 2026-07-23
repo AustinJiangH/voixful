@@ -136,17 +136,26 @@ class QwenPrefillForCoreAI(nn.Module):
         cos = c.rope_cos[:L]
         sin = c.rope_sin[:L]
         x = embeds
+        new_k, new_v = [], []
         for li, layer in enumerate(c.model.layers):
             h = _rms_norm(x, layer.input_layernorm.weight, c.eps)
             q, k, v = c.attn_qkv(layer, h, cos, sin)
-            self.k_cache[li, :, :, :L] = k[0]
-            self.v_cache[li, :, :, :L] = v[0]
+            new_k.append(k)
+            new_v.append(v)
             att = c.attend(layer, q, k, v, self.causal_mask)
             x = x + att
             h = _rms_norm(x, layer.post_attention_layernorm.weight, c.eps)
             x = x + c.mlp(layer, h)
+        # Single full-buffer state write (the lowering-proven pattern) —
+        # per-layer slice assigns did not survive conversion.
+        pad = torch.zeros(len(new_k), 1, c.n_kv, MAX_SEQ - L, c.head_dim)
+        self.k_cache.copy_(torch.cat([torch.cat(new_k, dim=0).unsqueeze(1), pad], dim=3))
+        self.v_cache.copy_(torch.cat([torch.cat(new_v, dim=0).unsqueeze(1), pad], dim=3))
         x = _rms_norm(x, c.model.norm.weight, c.eps)
-        last = x.index_select(1, last_idx.to(torch.int64).reshape(1)).squeeze(1)  # [1,H]
+        # One-hot row extraction — aten.index_select with a runtime index
+        # mis-lowers (reads a pad row); a matmul against the one-hot is exact.
+        onehot = (torch.arange(L, dtype=torch.int32) == last_idx.reshape(1)).to(x.dtype)
+        last = torch.matmul(onehot.view(1, 1, L), x).squeeze(1)      # [1,H]
         logits = c.lm_head(last)
         return torch.argmax(logits, dim=-1).to(torch.int32)
 
@@ -166,27 +175,33 @@ class QwenStepForCoreAI(nn.Module):
 
     def forward(self, tok: torch.Tensor, pos: torch.Tensor) -> torch.Tensor:
         c = self.core
-        p = pos.to(torch.int64).reshape(())
+        p = pos.to(torch.int64).reshape(1)
         x = self.embed(tok.to(torch.int64)).view(1, 1, c.hidden)
-        cos = c.rope_cos.index_select(0, p.reshape(1))     # [1, D]
-        sin = c.rope_sin.index_select(0, p.reshape(1))
+        cos = torch.nn.functional.embedding(p, c.rope_cos)  # [1, D]
+        sin = torch.nn.functional.embedding(p, c.rope_sin)
         onehot = (self.arangeS == pos.reshape(1)).to(x.dtype).view(1, 1, MAX_SEQ, 1)
         keymask = torch.where(
             self.arangeS.view(1, 1, 1, MAX_SEQ) <= pos.reshape(1, 1, 1, 1),
             torch.zeros(1, dtype=x.dtype),
             torch.full((1,), torch.finfo(torch.float32).min, dtype=x.dtype),
         )
+        new_k, new_v = [], []
         for li, layer in enumerate(c.model.layers):
             h = _rms_norm(x, layer.input_layernorm.weight, c.eps)
             q, k, v = c.attn_qkv(layer, h, cos, sin)       # q/k/v: [1,·,1,D]
-            # Broadcast one-hot write at row `pos` (no scatter, no .repeat()):
-            # k*onehot is [1,KV,MAX,D] with k's row at pos, zeros elsewhere.
-            self.k_cache[li] = self.k_cache[li] * (1 - onehot[0]) + (k * onehot)[0]
-            self.v_cache[li] = self.v_cache[li] * (1 - onehot[0]) + (v * onehot)[0]
-            att = c.attend(layer, q, self.k_cache[li], self.v_cache[li], keymask)
+            # Broadcast one-hot write at row `pos` (no scatter, no .repeat());
+            # computed as a LOCAL tensor so this layer attends to it, then all
+            # 28 layers commit in one full-buffer copy_ after the loop.
+            knl = self.k_cache[li] * (1 - onehot[0]) + (k * onehot)[0]
+            vnl = self.v_cache[li] * (1 - onehot[0]) + (v * onehot)[0]
+            new_k.append(knl)
+            new_v.append(vnl)
+            att = c.attend(layer, q, knl, vnl, keymask)
             x = x + att
             h = _rms_norm(x, layer.post_attention_layernorm.weight, c.eps)
             x = x + c.mlp(layer, h)
+        self.k_cache.copy_(torch.stack(new_k, dim=0))
+        self.v_cache.copy_(torch.stack(new_v, dim=0))
         x = _rms_norm(x, c.model.norm.weight, c.eps)
         logits = c.lm_head(x.squeeze(1))
         return torch.argmax(logits, dim=-1).to(torch.int32)
