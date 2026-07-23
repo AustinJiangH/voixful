@@ -157,7 +157,6 @@ def main(argv: list[str] | None = None) -> int:
             bucket = _asr_bucket(mel.shape[2], overhead)
             pf = QwenPrefillForCoreAI(llm_asr, bucket).eval()
             st = QwenStepForCoreAI(llm_asr).eval()
-            st.k_cache, st.v_cache = pf.k_cache, pf.v_cache
             ids = generate(pf, st, pemb, P, bucket)
             text = nemo_tok.ids_to_text(torch.tensor(ids))
             print(f"post-palettize ASR self-check: {text!r}")
