@@ -3,8 +3,9 @@
 // Parakeet differs from the streaming Nemotron path in two ways the rest of the
 // package is NOT built for, so this is a separate engine:
 //   1. Full-context encoder: the whole clip's mel goes in ONE `encode` call
-//      (no streaming caches). The convert pipeline fixes the mel length at 1000
-//      frames; we pad/truncate to that.
+//      (no streaming caches). The convert pipeline traces a fixed mel length
+//      (the largest window, up to 3000 frames = 30 s, recorded in
+//      parakeet.json); we pad/truncate each clip to the window it fits.
 //   2. TDT (Token-and-Duration Transducer) joint: its output is
 //      [1,1,1, vocab+1 + numDurations] = token logits (8193) followed by
 //      duration logits (5). Greedy decode argmaxes BOTH and advances the encoder
@@ -41,11 +42,17 @@ public actor ParakeetTDTEngine {
     private let melExtractor: MelExtractor
 
     // Parakeet TDT 0.6B constants (probed from the checkpoint).
-    private static let melFrames = 1000          // fixed encoder mel length (convert.py)
+    /// Largest encoder window = the bare `encode` function's mel length, and the
+    /// `project_enc` trace length (= melFrames / 8). Read from the asset's
+    /// `parakeet.json` (new assets encode up to 3000 frames = 30 s); assets
+    /// predating the manifest fall back to the historical 1000 / 125.
+    private let melFrames: Int
+    private let projT: Int
 
-    /// Largest single-pass audio: 1000 mel frames × 160-sample hop = 10 s at
-    /// 16 kHz. Audio past this is truncated (`min(realT, window)` above).
-    public nonisolated var maxAudioSamples: Int { Self.melFrames * 160 }
+    /// Largest single-pass audio: `melFrames` × 160-sample hop (10 s at 1000
+    /// frames, 30 s at 3000). Longer audio is segmented by the callers (see
+    /// VoixfulFullContext `LongForm`), never truncated in normal use.
+    public nonisolated var maxAudioSamples: Int { melFrames * 160 }
     private static let nMels = 128
     private static let dModel = 1024
     private static let durations: [Int] = [0, 1, 2, 3, 4]
@@ -75,6 +82,18 @@ public actor ParakeetTDTEngine {
         self.model = model
         let names = try ModelBackend.assetFunctions(modelURL: modelURL).names
         guard names.contains("encode") else { throw ASRError.missingFunction("encode") }
+        // Largest window + projector length from the asset manifest; older
+        // assets without parakeet.json keep the historical 1000-frame (10 s)
+        // window and T=125 projector.
+        if let data = try? Data(contentsOf: modelURL.appendingPathComponent("parakeet.json")),
+           let m = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let mf = m["mel_frames"] as? Int, let pt = m["proj_t"] as? Int {
+            self.melFrames = mf
+            self.projT = pt
+        } else {
+            self.melFrames = 1000
+            self.projT = 125
+        }
         self.encodeWindows = encodeWindowNames(names)
         self.available = names
         self.cpuDecoder = names.contains("project_enc")
@@ -164,7 +183,7 @@ public actor ParakeetTDTEngine {
         let melFlat = await melExtractor.extract(samples: audio)  // row-major [128 × T]
         let realT = melFlat.count / Self.nMels
         let picked = pickEncodeWindow(encodeWindows, realFrames: realT)
-        let window = picked?.frames ?? Self.melFrames
+        let window = picked?.frames ?? melFrames
         let encode = try await fn(picked?.name ?? "encode")
         let useT = min(realT, window)
 
@@ -223,9 +242,6 @@ public actor ParakeetTDTEngine {
                           segments: [], language: nil)
     }
 
-    /// Fixed T the `project_enc` program was traced at (largest window's
-    /// encoder output length: 1000 mel frames / 8).
-    private static let projT = 125
     /// Joint hidden width (project_encoder / project_prednet output).
     private static let jointHidden = 640
 
@@ -238,12 +254,12 @@ public actor ParakeetTDTEngine {
         let tOut = encOut.shape[1]
         let frames = min(tOut, (realFrames + 7) / 8 + 1)
 
-        var encPad = NDArray(shape: [1, Self.projT, Self.dModel], scalarType: .float32)
+        var encPad = NDArray(shape: [1, projT, Self.dModel], scalarType: .float32)
         var pv = encPad.mutableView(as: Float.self)
         pv.withUnsafeMutablePointer { dst, _, _ in
-            dst.update(repeating: 0, count: Self.projT * Self.dModel)
+            dst.update(repeating: 0, count: projT * Self.dModel)
             encOut.view(as: Float.self).withUnsafePointer { src, _, _ in
-                dst.update(from: src, count: min(tOut, Self.projT) * Self.dModel)
+                dst.update(from: src, count: min(tOut, projT) * Self.dModel)
             }
         }
         var projOutputs = try await fn("project_enc").run(
@@ -284,12 +300,12 @@ public actor ParakeetTDTEngine {
         let frames = min(tOut, (realFrames + 7) / 8 + 1)
 
         // Zero-pad enc_out to the projector's fixed [1, 125, 1024] frame.
-        var encPad = NDArray(shape: [1, Self.projT, Self.dModel], scalarType: .float32)
+        var encPad = NDArray(shape: [1, projT, Self.dModel], scalarType: .float32)
         var pv = encPad.mutableView(as: Float.self)
         pv.withUnsafeMutablePointer { dst, _, _ in
-            dst.update(repeating: 0, count: Self.projT * Self.dModel)
+            dst.update(repeating: 0, count: projT * Self.dModel)
             encOut.view(as: Float.self).withUnsafePointer { src, _, _ in
-                dst.update(from: src, count: min(tOut, Self.projT) * Self.dModel)
+                dst.update(from: src, count: min(tOut, projT) * Self.dModel)
             }
         }
         var projOutputs = try await fn("project_enc").run(
