@@ -43,6 +43,9 @@ public actor GraniteNAREngine {
     }
 
     private let windows: [Window]  // ascending by frames
+
+    /// Largest single-pass audio: max encoder frames (50 Hz) × 320 samples/frame.
+    public nonisolated var maxAudioSamples: Int { (windows.map(\.frames).max() ?? 1500) * 320 }
     private let blankId: Int32
     private let minEditLength: Int
 

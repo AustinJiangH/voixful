@@ -106,7 +106,12 @@ let package = Package(
         // MARK: Core AI engine (all model runtimes) + tests
         .target(
             name: "VoixfulEngine",
-            dependencies: []
+            dependencies: [],
+            // Opt into Accelerate's new (non-deprecated) CBLAS/LAPACK interface so
+            // the cblas_* calls in CPUTransducerDecoder don't warn on macOS 13.3+.
+            swiftSettings: [
+                .unsafeFlags(["-Xcc", "-DACCELERATE_NEW_LAPACK=1"])
+            ]
         ),
         .testTarget(
             name: "VoixfulEngineTests",
