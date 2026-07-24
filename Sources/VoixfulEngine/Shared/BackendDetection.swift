@@ -17,6 +17,30 @@ import Foundation
 
 public enum ModelBackend: String, Sendable, CaseIterable {
     case nemotron, parakeet, cohere, granite, canary
+
+    /// Longest audio the backend's standard converted asset transcribes in ONE
+    /// pass — the SMALLER of its fixed encoder window and any downstream decoder
+    /// token cap (the same quantity each engine exposes at runtime as
+    /// `maxAudioSamples`, here as static registry metadata / 16 kHz seconds):
+    ///   • parakeet — 10 s (1000-frame mel encoder window)
+    ///   • cohere   — 15 s (108-token AED decoder cap binds before the 35 s window)
+    ///   • granite  — 32 s (largest 1600-frame encoder window; token budget scales)
+    ///   • canary   — 36 s (256-token decode cap binds before the 40 s window)
+    ///   • nemotron — nil  (cache-aware streaming; no window, unbounded)
+    ///
+    /// This is NOT a limit on what a user may dictate: the full-context
+    /// transcribers segment longer audio automatically (see VoixfulFullContext
+    /// `LongForm`). It's an informational hint for consumers — e.g. a live HUD
+    /// showing where a single re-transcribe pass tops out.
+    public var singlePassWindowSeconds: Double? {
+        switch self {
+        case .nemotron: return nil
+        case .parakeet: return 10
+        case .cohere:   return 15
+        case .granite:  return 32
+        case .canary:   return 36
+        }
+    }
 }
 
 extension ModelBackend {

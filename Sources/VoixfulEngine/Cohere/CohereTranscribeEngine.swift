@@ -47,6 +47,20 @@ public actor CohereTranscribeEngine {
 
     // Cohere Transcribe constants.
     private static let melFrames = 3500          // fixed 35 s encoder window
+
+    /// Largest single-pass audio — the SMALLER of two independent limits:
+    ///   • the 35 s encoder window (3500 mel frames × 160-sample hop), and
+    ///   • the AED decoder's 108-token cap (`maxCacheLen`): the decode loop
+    ///     stops at 108 tokens whether or not EOS was reached, so a chunk that
+    ///     transcribes to more than that has its tail dropped at the DECODER —
+    ///     the same truncation as the encoder window, one stage later.
+    /// At a fast ~7 tokens/s that 108-token budget is hit in ~15 s, so the
+    /// decoder binds first here. Long-form callers segment below this.
+    public nonisolated var maxAudioSamples: Int {
+        let encoderWindow = Self.melFrames * 160                    // 35 s
+        let decoderBudget = (Self.maxCacheLen / 7) * 16_000        // ~15 s at 7 tokens/s
+        return min(encoderWindow, decoderBudget)
+    }
     private static let nMels = 128
     private static let encDim = 1024
     private static let tEnc = 438                // encoder output frames (3500 -> /8)

@@ -51,8 +51,11 @@ public actor LiveFullContextTranscriber<Engine: FullContextEngine>: Transcribing
 
     /// New audio required before another refresh pass (16 kHz samples).
     private let refreshStride: Int
-    /// Live-buffer size that triggers a head commit (16 kHz samples).
-    private let commitThreshold: Int
+    /// Live-buffer size that triggers a head commit (16 kHz samples) — the
+    /// streaming analog of `LongForm` segmentation. Clamped in `prepare()` to
+    /// below the engine's fixed window so each pass stays within one window and
+    /// the head is committed (never dropped) as the utterance grows past it.
+    private var commitThreshold: Int
 
     public init(
         modelURL: URL,
@@ -77,12 +80,24 @@ public actor LiveFullContextTranscriber<Engine: FullContextEngine>: Transcribing
 
     public func prepare() async throws {
         guard engine == nil else { return }
+        let created: Engine
         do {
-            engine = try await Engine(modelURL: modelURL, piecesURL: piecesURL)
+            created = try await Engine(modelURL: modelURL, piecesURL: piecesURL)
         } catch {
             throw VoixfulError.engine("could not load \(Engine.displayName) engine: \(error)")
         }
-        await engine?.prewarm()
+        engine = created
+
+        // Commit the head BEFORE the growing buffer reaches the engine's fixed
+        // window (Parakeet: 10 s): the head is transcribed and frozen, the tail
+        // keeps growing — no audio is dropped and no pass exceeds one window.
+        // 85% leaves headroom for a refresh stride and the split point. Clamp
+        // strictly DOWN to safeWindow (never up), and never above the caller's
+        // requested threshold.
+        let safeWindow = Int(Double(created.maxAudioSamples) * 0.85)
+        commitThreshold = min(commitThreshold, safeWindow)
+
+        await created.prewarm()
     }
 
     /// True once any transcribe pass has produced a result. Until then the
@@ -115,12 +130,18 @@ public actor LiveFullContextTranscriber<Engine: FullContextEngine>: Transcribing
         samplesAtLastRefresh = utterance.count
 
         if utterance.count >= commitThreshold {
-            let splitAt = Self.quietestSplit(
+            let splitAt = LongForm.quietestSplit(
                 utterance, from: commitThreshold / 2, to: commitThreshold)
             let head = Array(utterance[..<splitAt])
             Task {
-                let text = (try? await engine.transcribe(audio: head))?.text ?? ""
-                await self.commitHead(text: text, samples: splitAt)
+                do {
+                    // LongForm keeps the head safe even if it ever exceeds the
+                    // window; on a transcribe error we must NOT drop the samples.
+                    let text = try await LongForm.transcribe(audio: head, with: engine)
+                    self.commitHead(text: text, samples: splitAt)
+                } catch {
+                    self.commitFailed()
+                }
             }
             return
         }
@@ -139,7 +160,7 @@ public actor LiveFullContextTranscriber<Engine: FullContextEngine>: Transcribing
                         duration: CMTime(seconds: Double(snapshot.count) / 16_000, preferredTimescale: 1_000)),
                     isFinal: false))
             }
-            await self.refreshDone()
+            self.refreshDone()
         }
     }
 
@@ -159,26 +180,13 @@ public actor LiveFullContextTranscriber<Engine: FullContextEngine>: Transcribing
         maybeRefresh()  // tail may already be past the refresh stride
     }
 
-    /// Index of the quietest 200 ms in `[from, to)` — a cheap pause detector
-    /// so head commits split between words, not through them. Returns the
-    /// middle of the quietest window.
-    private static func quietestSplit(_ audio: [Float], from: Int, to: Int) -> Int {
-        let win = 3_200  // 200 ms at 16 kHz
-        let hi = min(to, audio.count) - win
-        guard hi > from else { return min(to, audio.count) }
-        var best = from
-        var bestEnergy = Float.greatestFiniteMagnitude
-        var i = from
-        while i < hi {
-            var e: Float = 0
-            for j in i..<(i + win) { e += audio[j] * audio[j] }
-            if e < bestEnergy {
-                bestEnergy = e
-                best = i
-            }
-            i += win / 2
-        }
-        return best + win / 2
+    /// A head-commit transcribe failed (e.g. transient specialization/OOM).
+    /// Keep the head samples in `utterance` so the next pass retries — a failed
+    /// commit must never silently drop audio. Reset the refresh accounting so
+    /// the retry fires without waiting a whole extra stride.
+    private func commitFailed() {
+        refreshInFlight = false
+        samplesAtLastRefresh = 0
     }
 
     public func finalize() async throws {
@@ -189,7 +197,9 @@ public actor LiveFullContextTranscriber<Engine: FullContextEngine>: Transcribing
             while refreshInFlight {
                 try await Task.sleep(nanoseconds: 20_000_000)
             }
-            let tail = try await engine.transcribe(audio: utterance).text
+            // Segment defensively: the tail is normally below the window after
+            // commits, but a final burst with no pause could push it over.
+            let tail = try await LongForm.transcribe(audio: utterance, with: engine)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             let full = committedText.isEmpty
                 ? tail

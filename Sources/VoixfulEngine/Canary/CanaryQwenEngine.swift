@@ -41,6 +41,20 @@ public actor CanaryQwenEngine {
     private let windows: [Window]
     private let eosId: Int32
     private let maxSeq: Int
+
+    /// ASR decode cap (`generate(maxNew:)` below) — the loop stops here whether
+    /// or not EOS was reached, so a chunk transcribing to more tokens loses its
+    /// tail at the decoder. Bounds `maxAudioSamples` alongside the encoder window.
+    private static let maxDecodeTokens = 256
+
+    /// Largest single-pass audio — the SMALLER of the encoder window (max mel
+    /// frames × 160) and the decoder token budget (`maxDecodeTokens` at a fast
+    /// ~7 tokens/s ≈ 36 s). Long-form callers segment below this.
+    public nonisolated var maxAudioSamples: Int {
+        let encoderWindow = (windows.map(\.melFrames).max() ?? 1500) * 160
+        let decoderBudget = (Self.maxDecodeTokens / 7) * 16_000
+        return min(encoderWindow, decoderBudget)
+    }
     private let embedN: Int
     private let asrPre: [Int32], asrPost: [Int32]
     private let fmtPre: [Int32], fmtPost: [Int32]
@@ -183,7 +197,7 @@ public actor CanaryQwenEngine {
             prefillName: window.prefillName, stepName: "step_asr",
             bucket: window.asrBucket,
             segments: [.host(preE), .device(audioEmbeds, rows: aReal), .host(postE)],
-            maxNew: 256)
+            maxNew: Self.maxDecodeTokens)
         let tASR = CFAbsoluteTimeGetCurrent()
 
         var text = detokenizer.decode(transcriptIds)

@@ -36,6 +36,13 @@ public protocol FullContextEngine: Actor {
     static var identifierSuffix: String { get }
     /// Locales this backend advertises.
     static var supportedLocales: [Locale] { get }
+
+    /// The largest audio (16 kHz samples) the engine transcribes in ONE pass —
+    /// the size of its FIXED, exported encoder window (Parakeet: 1000 mel
+    /// frames = 10 s). This is NOT a length limit on what a user may dictate:
+    /// callers transcribe longer audio by segmenting it into chunks of this
+    /// size (see `LongForm`). It only bounds a single `transcribe` call.
+    nonisolated var maxAudioSamples: Int { get }
 }
 
 public actor FullContextTranscriber<Engine: FullContextEngine>: Transcribing {
@@ -99,14 +106,18 @@ public actor FullContextTranscriber<Engine: FullContextEngine>: Transcribing {
     public func finalize() async throws {
         guard let engine else { continuation.finish(); return }
         do {
-            let transcript = try await engine.transcribe(audio: utterance)
+            // Segment on silence into window-sized chunks so a clip longer than
+            // the engine's fixed encoder window (Parakeet: 10 s) transcribes in
+            // full instead of being truncated at the window. One pass when it
+            // already fits.
+            let text = try await LongForm.transcribe(audio: utterance, with: engine)
             let start = utteranceStart ?? 0
             let duration = Double(samplesSeen) / 16_000.0
             let range = CMTimeRange(
                 start: CMTime(seconds: start, preferredTimescale: 1_000),
                 duration: CMTime(seconds: duration, preferredTimescale: 1_000))
             continuation.yield(TranscriptionResult(
-                text: AttributedString(transcript.text), range: range, isFinal: true))
+                text: AttributedString(text), range: range, isFinal: true))
             continuation.finish()
         } catch {
             let wrapped = VoixfulError.engine("finalize failed: \(error)")

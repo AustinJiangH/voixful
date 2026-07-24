@@ -42,6 +42,10 @@ public actor ParakeetTDTEngine {
 
     // Parakeet TDT 0.6B constants (probed from the checkpoint).
     private static let melFrames = 1000          // fixed encoder mel length (convert.py)
+
+    /// Largest single-pass audio: 1000 mel frames × 160-sample hop = 10 s at
+    /// 16 kHz. Audio past this is truncated (`min(realT, window)` above).
+    public nonisolated var maxAudioSamples: Int { Self.melFrames * 160 }
     private static let nMels = 128
     private static let dModel = 1024
     private static let durations: [Int] = [0, 1, 2, 3, 4]
