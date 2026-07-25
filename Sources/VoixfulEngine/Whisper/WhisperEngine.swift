@@ -145,7 +145,12 @@ public actor WhisperEngine {
         // the bundled English default.
         let langs = obj["languages"] as? [String: Int] ?? [:]
         let lang = locale.language.languageCode?.identifier ?? "en"
-        let langToken = langs[lang] ?? (obj["lang_en"] as? Int) ?? Int(sot) + 1
+        let englishDefault = (obj["lang_en"] as? Int) ?? Int(sot) + 1
+        var langToken = langs[lang] ?? englishDefault
+        // Defensive: a language absent from the checkpoint can resolve to a bogus
+        // id that aliases eot (e.g. pre-fix manifests mapped <|yue|> -> eot);
+        // priming the decoder with EOT stops it instantly. Fall back to English.
+        if langToken <= eot { langToken = englishDefault }
         return Config(
             nMels: nMels, melFrames: melFrames, chunkSamples: chunkSamples,
             sampleRate: sampleRate, nFFT: nFFT, hop: hop, tEnc: tEnc, dModel: dModel,

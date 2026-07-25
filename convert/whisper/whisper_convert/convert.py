@@ -81,8 +81,13 @@ def _special_tokens(tokenizer) -> dict:
         from transformers.models.whisper.tokenization_whisper import LANGUAGES
 
         for code in LANGUAGES:
-            cid = int(tokenizer.convert_tokens_to_ids(f"<|{code}|>"))
-            if cid >= 0:
+            tok = f"<|{code}|>"
+            cid = tokenizer.convert_tokens_to_ids(tok)
+            # `convert_tokens_to_ids` returns the UNK id (which aliases <|endoftext|>
+            # = eot) for language tokens absent from this checkpoint — e.g. <|yue|>
+            # only exists in large-v3. Round-trip so a bogus id (it would prime the
+            # decoder with EOT and instantly stop) never lands in the map.
+            if isinstance(cid, int) and cid >= 0 and tokenizer.convert_ids_to_tokens(cid) == tok:
                 languages[code] = cid
     except Exception:
         languages = {"en": specials["lang_en"]}
