@@ -12,8 +12,9 @@ fully on device, on the ANE/GPU.
 
 ## What's here
 
-Six model checkpoints ship today across five backends, spanning five
-architectures (Parakeet v2 and v3 share the `VoixfulParakeetTDT` backend). The backend is
+Seven model checkpoints ship today across six backends, spanning five
+architecture families (Parakeet v2 and v3 share the `VoixfulParakeetTDT` backend;
+Cohere and Whisper are both attention encoder-decoders). The backend is
 auto-detected from the `.aimodel`'s function signatures — same `transcribe` /
 `mic` commands for all of them.
 
