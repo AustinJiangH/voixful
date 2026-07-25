@@ -10,10 +10,11 @@ final class ModelRegistryTests: XCTestCase {
         let registry = try ModelRegistry.load()
         XCTAssertFalse(registry.models.isEmpty, "registry should ship models")
         XCTAssertEqual(registry.schemaVersion, 1)
-        // Eight entries: the 5 single-checkpoint backends + Parakeet v2/v3 +
-        // two Whisper variants (tiny, base); Cohere included but excluded from
-        // downloads.
-        XCTAssertEqual(registry.models.count, 8)
+        // Eleven entries: the 4 single-checkpoint backends (nemotron, granite,
+        // cohere, canary) + Parakeet v2/v3 + five Whisper variants
+        // (base, small, large-v3-turbo, medium, large-v3). Cohere is included
+        // but excluded from downloads.
+        XCTAssertEqual(registry.models.count, 11)
     }
 
     /// `downloadDir` is set and expands its leading `~`.
@@ -108,7 +109,8 @@ final class ModelRegistryTests: XCTestCase {
         let registry = try ModelRegistry.load()
         let defaults = registry.models.filter(\.isDefaultDownload)
         XCTAssertEqual(defaults.count, 1, "expected exactly one default download")
-        XCTAssertEqual(registry.defaultDownload?.id, "whisper-base")
+        // Nemotron: native streaming, lowest latency — the sensible default.
+        XCTAssertEqual(registry.defaultDownload?.id, "nemotron-speech-streaming-en-0.6b")
     }
 
     /// `ModelRegistry.bundled` (the trapping accessor) resolves.
