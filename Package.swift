@@ -113,6 +113,12 @@ let package = Package(
         .target(
             name: "VoixfulEngine",
             dependencies: [],
+            // The model registry catalog (data, not Swift) — bundled so apps
+            // depending on the package read it via `Bundle.module` /
+            // `ModelRegistry.bundled`. Copied verbatim so it stays human-editable.
+            resources: [
+                .copy("Resources/models.json"),
+            ],
             // Opt into Accelerate's new (non-deprecated) CBLAS/LAPACK interface so
             // the cblas_* calls in CPUTransducerDecoder don't warn on macOS 13.3+.
             swiftSettings: [
