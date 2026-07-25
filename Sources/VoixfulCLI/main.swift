@@ -16,6 +16,7 @@ import VoixfulParakeetTDT
 import VoixfulCohereTranscribe
 import VoixfulGraniteNAR
 import VoixfulCanaryQwen
+import VoixfulWhisper
 import VoixfulFullContext
 import VoixfulEngine
 
@@ -45,7 +46,7 @@ struct Transcribe: AsyncParsableCommand {
     @Option(help: "Path to the .aimodel directory.")
     var model: String
 
-    @Option(help: "Force the model architecture (nemotron/parakeet/cohere/granite/canary). Default: auto-detect from the model.")
+    @Option(help: "Force the model architecture (nemotron/parakeet/cohere/granite/canary/whisper). Default: auto-detect from the model.")
     var backend: ModelBackend?
 
     @Option(help: "SentencePiece vocab for parakeet/cohere/granite/canary. Default: sibling 'pieces.txt' of the model.")
@@ -100,6 +101,10 @@ struct Transcribe: AsyncParsableCommand {
             case .canary:
                 if bullets { setenv("VOIXFUL_CANARY_FORMAT", "bullets", 1) }
                 transcriber = CanaryTranscriber(
+                    modelURL: modelURL, piecesURL: piecesURL(modelURL), locale: locale)
+            case .whisper:
+                // Self-contained: reads whisper.json + tokens.txt from the asset.
+                transcriber = WhisperTranscriber(
                     modelURL: modelURL, piecesURL: piecesURL(modelURL), locale: locale)
             }
         } catch {
@@ -248,6 +253,9 @@ struct Mic: AsyncParsableCommand {
                     modelURL: modelURL, piecesURL: piecesURL, locale: locale)
             case .canary:
                 transcriber = LiveFullContextTranscriber<CanaryQwenEngine>(
+                    modelURL: modelURL, piecesURL: piecesURL, locale: locale)
+            case .whisper:
+                transcriber = LiveFullContextTranscriber<WhisperEngine>(
                     modelURL: modelURL, piecesURL: piecesURL, locale: locale)
             }
         } catch {

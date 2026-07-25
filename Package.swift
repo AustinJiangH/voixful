@@ -21,6 +21,7 @@ let package = Package(
         .library(name: "VoixfulCohereTranscribe", targets: ["VoixfulCohereTranscribe"]),
         .library(name: "VoixfulGraniteNAR", targets: ["VoixfulGraniteNAR"]),
         .library(name: "VoixfulCanaryQwen", targets: ["VoixfulCanaryQwen"]),
+        .library(name: "VoixfulWhisper", targets: ["VoixfulWhisper"]),
         // Shared full-context (batch) transcriber lifecycle (Parakeet + Cohere).
         .library(name: "VoixfulFullContext", targets: ["VoixfulFullContext"]),
         // Brand CLI: `voixful transcribe …`.
@@ -74,6 +75,10 @@ let package = Package(
             name: "VoixfulCanaryQwen",
             dependencies: ["VoixfulSpeech", "VoixfulEngine", "VoixfulFullContext"]
         ),
+        .target(
+            name: "VoixfulWhisper",
+            dependencies: ["VoixfulSpeech", "VoixfulEngine", "VoixfulFullContext"]
+        ),
 
         // MARK: Brand CLI
         .executableTarget(
@@ -86,6 +91,7 @@ let package = Package(
                 "VoixfulCohereTranscribe",
                 "VoixfulGraniteNAR",
                 "VoixfulCanaryQwen",
+                "VoixfulWhisper",
                 "VoixfulEngine",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ],
@@ -107,6 +113,12 @@ let package = Package(
         .target(
             name: "VoixfulEngine",
             dependencies: [],
+            // The model registry catalog (data, not Swift) — bundled so apps
+            // depending on the package read it via `Bundle.module` /
+            // `ModelRegistry.bundled`. Copied verbatim so it stays human-editable.
+            resources: [
+                .copy("Resources/models.json"),
+            ],
             // Opt into Accelerate's new (non-deprecated) CBLAS/LAPACK interface so
             // the cblas_* calls in CPUTransducerDecoder don't warn on macOS 13.3+.
             swiftSettings: [
@@ -115,7 +127,7 @@ let package = Package(
         ),
         .testTarget(
             name: "VoixfulEngineTests",
-            dependencies: ["VoixfulEngine", "VoixfulFullContext", "VoixfulGraniteNAR", "VoixfulSpeech"]
+            dependencies: ["VoixfulEngine", "VoixfulFullContext", "VoixfulGraniteNAR", "VoixfulWhisper", "VoixfulSpeech"]
         ),
     ]
 )

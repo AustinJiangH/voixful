@@ -7,6 +7,8 @@
 //
 //   - Canary-Qwen (SALM): has a `step_asr` function (autoregressive Qwen3 decode).
 //   - Granite (NAR): has `edit_<A>_<U>` single-pass LLM edit functions.
+//   - Whisper (attention encoder-decoder): has a `whisper_decode` function (the
+//     distinctive name keeps it apart from Cohere's `decode_step*`).
 //   - Cohere (attention encoder-decoder): has a `decode_step*` function.
 //   - Nemotron (streaming, cache-aware RNN-T): `encode` carries streaming cache
 //     STATES (cache_last_channel/…), no `decode_step`.
@@ -16,7 +18,7 @@ import CoreAI
 import Foundation
 
 public enum ModelBackend: String, Sendable, CaseIterable {
-    case nemotron, parakeet, cohere, granite, canary
+    case nemotron, parakeet, cohere, granite, canary, whisper
 
     /// Longest audio the backend's standard converted asset transcribes in ONE
     /// pass — the SMALLER of its fixed encoder window and any downstream decoder
@@ -27,6 +29,8 @@ public enum ModelBackend: String, Sendable, CaseIterable {
     ///   • cohere   — 15 s (108-token AED decoder cap binds before the 35 s window)
     ///   • granite  — 32 s (largest 1600-frame encoder window; token budget scales)
     ///   • canary   — 36 s (256-token decode cap binds before the 40 s window)
+    ///   • whisper  — 30 s (Whisper's fixed 30 s encoder window; audio is always
+    ///                padded/truncated to it)
     ///   • nemotron — nil  (cache-aware streaming; no window, unbounded)
     ///
     /// This is NOT a limit on what a user may dictate: the full-context
@@ -40,6 +44,7 @@ public enum ModelBackend: String, Sendable, CaseIterable {
         case .cohere:   return 15
         case .granite:  return 32
         case .canary:   return 36
+        case .whisper:  return 30
         }
     }
 }
@@ -79,6 +84,11 @@ extension ModelBackend {
         // Granite NAR: single-pass LLM edit entrypoints (edit_<A>_<U>).
         if fns.names.contains(where: { $0.hasPrefix("edit_") }) {
             return .granite
+        }
+        // Whisper AED: distinctively-named decode entrypoint. Checked BEFORE
+        // Cohere so the generic `decode_*` rule below can't shadow it.
+        if fns.names.contains("whisper_decode") {
+            return .whisper
         }
         if !fns.names.isDisjoint(with: ["decode_x4", "decode_step_fused", "decode_step_cached", "decode_step"]) {
             return .cohere
