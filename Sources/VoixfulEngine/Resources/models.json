@@ -378,7 +378,7 @@
       "wer": 12.8,
       "license": "MIT",
       "excludeFromDownloads": false,
-      "notes": "Converted + verified locally (palette4) at ~/repos/voixful-models/beta3/; HF repo publish pending. English path verified end-to-end; `languages` reflects Whisper's multilingual capability (non-English priming is implemented but not yet benchmarked).",
+      "notes": "Published (palette4) to Hugging Face. English path verified end-to-end; `languages` reflects Whisper's multilingual capability (non-English priming is implemented but not yet benchmarked).",
       "download": {
         "source": "huggingface",
         "repo": "AustinJiangH/voixful-whisper-base",
@@ -401,11 +401,11 @@
       "singlePassWindowSeconds": 30,
       "accuracy": 3,
       "speed": 7,
-      "shortDescription": "English-only Whisper base — same tiny footprint and fast decode (~0.13s), better English WER than multilingual base.",
+      "shortDescription": "English-only Whisper base \u2014 same tiny footprint and fast decode (~0.13s), better English WER than multilingual base.",
       "wer": 10.33,
       "license": "MIT",
       "excludeFromDownloads": false,
-      "notes": "English-only (`.en`) checkpoint: the decoder is primed with [<|startoftranscript|>, <|notimestamps|>] (no language, no task token) per the checkpoint's forced_decoder_ids — the multilingual [sot, <|en|>, <|transcribe|>, notimestamps] prompt is off-distribution here. Converted + verified locally (palette4) at ~/repos/voixful-models/beta3/; HF repo publish pending. wer is the Open ASR Leaderboard 8-dataset English composite average for openai/whisper-base.en.",
+      "notes": "English-only (`.en`) checkpoint: the decoder is primed with [<|startoftranscript|>, <|notimestamps|>] (no language, no task token) per the checkpoint's forced_decoder_ids \u2014 the multilingual [sot, <|en|>, <|transcribe|>, notimestamps] prompt is off-distribution here. Published (palette4) to Hugging Face. wer is the Open ASR Leaderboard 8-dataset English composite average for openai/whisper-base.en.",
       "download": {
         "source": "huggingface",
         "repo": "AustinJiangH/voixful-whisper-base.en",
@@ -530,7 +530,7 @@
       "wer": 9.8,
       "license": "MIT",
       "excludeFromDownloads": false,
-      "notes": "Converted + verified locally (palette4) at ~/repos/voixful-models/beta3/; HF repo publish pending. English path verified end-to-end; `languages` reflects Whisper's multilingual capability (non-English priming is implemented but not yet benchmarked).",
+      "notes": "Published (palette4) to Hugging Face. English path verified end-to-end; `languages` reflects Whisper's multilingual capability (non-English priming is implemented but not yet benchmarked).",
       "download": {
         "source": "huggingface",
         "repo": "AustinJiangH/voixful-whisper-small",
@@ -655,7 +655,7 @@
       "wer": 7.83,
       "license": "MIT",
       "excludeFromDownloads": false,
-      "notes": "Converted + verified locally (palette4) at ~/repos/voixful-models/beta3/; HF repo publish pending. English path verified end-to-end; `languages` reflects Whisper's multilingual capability (non-English priming is implemented but not yet benchmarked).",
+      "notes": "Published (palette4) to Hugging Face. English path verified end-to-end; `languages` reflects Whisper's multilingual capability (non-English priming is implemented but not yet benchmarked).",
       "download": {
         "source": "huggingface",
         "repo": "AustinJiangH/voixful-whisper-large-v3-turbo",
@@ -780,7 +780,7 @@
       "wer": 8.6,
       "license": "MIT",
       "excludeFromDownloads": false,
-      "notes": "Converted + verified locally (palette4) at ~/repos/voixful-models/beta3/; HF repo publish pending. English path verified end-to-end; `languages` reflects Whisper's multilingual capability (non-English priming is implemented but not yet benchmarked).",
+      "notes": "Published (palette4) to Hugging Face. English path verified end-to-end; `languages` reflects Whisper's multilingual capability (non-English priming is implemented but not yet benchmarked).",
       "download": {
         "source": "huggingface",
         "repo": "AustinJiangH/voixful-whisper-medium",
@@ -905,7 +905,7 @@
       "wer": 7.44,
       "license": "MIT",
       "excludeFromDownloads": false,
-      "notes": "Converted + verified locally (palette4) at ~/repos/voixful-models/beta3/; HF repo publish pending. English path verified end-to-end; `languages` reflects Whisper's multilingual capability (non-English priming is implemented but not yet benchmarked).",
+      "notes": "Published (palette4) to Hugging Face. English path verified end-to-end; `languages` reflects Whisper's multilingual capability (non-English priming is implemented but not yet benchmarked).",
       "download": {
         "source": "huggingface",
         "repo": "AustinJiangH/voixful-whisper-large-v3",
