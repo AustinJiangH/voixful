@@ -50,8 +50,9 @@ reproducible. The buckets are also embedded under the top-level `scoring` key.
 | (worse / unknown) | 3 |
 
 Applied: granite 4.95 → 9 · canary 5.06 → 8 · cohere 5.20 → 8 · parakeet-v2
-5.39 → 8 · parakeet-v3 5.66 → 7 · nemotron 5.73 → 7 · whisper-base 7.5 → 5 ·
-whisper-tiny (not on leaderboard, est. WER ≳ 10) → 3.
+5.39 → 8 · parakeet-v3 5.66 → 7 · nemotron 5.73 → 7 · whisper-large-v3 7.44 → 5 ·
+whisper-large-v3-turbo 7.83 → 5 · whisper-medium 8.6 → 4 · whisper-small
+9.8 → 4 · whisper-base 12.8 → 3.
 
 ### `speed` — bucketed from native-streaming vs. full-context single-pass latency
 
@@ -68,14 +69,18 @@ Latencies are the warm per-utterance pass numbers measured on M5 Pro (README
 | slower | 2 |
 
 Applied: nemotron (streaming) → 10 · parakeet v2/v3 (~0.07 s) → 9 · granite /
-cohere (~0.29 s) → 7 · canary (~4 s) → 2 · whisper-base (est. ~0.3–0.5 s) → 7 ·
-whisper-tiny (est. faster) → 8.
+cohere (~0.29 s) → 7 · whisper-base (~0.25 s) → 7 · whisper-small (~0.55 s) → 5 ·
+whisper-large-v3-turbo (~0.9 s) → 5 · whisper-medium (~1.5 s) → 5 ·
+whisper-large-v3 (~2.5 s) → 3 · canary (~4 s) → 2.
 
 ## Estimated vs. measured
 
 `convertedSizeMB` is **measured** (`du -sm` of the beta3 palette4 asset) for
-nemotron, parakeet v2/v3, granite, cohere, and canary. The two **Whisper**
-entries are **estimated** (no `.aimodel` on disk yet) — size from params at
-4-bit + overhead, speed from the architecture — and carry a `notes` TODO for the
-converter agent to replace with measured numbers. Whisper WER for `-base` (7.5)
-is the Open ASR Leaderboard figure; `whisper-tiny` WER is `null` (not listed).
+every entry — nemotron, parakeet v2/v3, granite, cohere, canary, and all five
+Whisper variants (base, small, medium, large-v3-turbo, large-v3). Canary's number
+is taken from the decoder-split `canary-qwen-2.5b-palette4-d.aimodel`, the only
+palette4 asset for that model on disk (see its `notes`). The Whisper entries carry
+a `notes` caveat: assets are converted + verified locally, but their Hugging Face
+repos are publish-pending and only the English path is benchmarked so far. `wer`
+values are Open ASR Leaderboard means; the Whisper figures are the published
+English WERs for each checkpoint.

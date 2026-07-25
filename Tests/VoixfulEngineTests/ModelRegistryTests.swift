@@ -113,6 +113,82 @@ final class ModelRegistryTests: XCTestCase {
         XCTAssertEqual(registry.defaultDownload?.id, "nemotron-speech-streaming-en-0.6b")
     }
 
+    /// The embedded `scoring` buckets are present and non-empty — the data
+    /// carries its own derivation rules (mirrored in Resources/README.md).
+    func testScoringPresent() throws {
+        let registry = try ModelRegistry.load()
+        let scoring = try XCTUnwrap(registry.scoring, "registry should embed scoring buckets")
+        XCTAssertFalse(scoring.accuracyByWER.isEmpty, "accuracyByWER buckets missing")
+        XCTAssertFalse(scoring.speedByPass.isEmpty, "speedByPass buckets missing")
+    }
+
+    /// Every `accuracy` is exactly the score the embedded WER buckets derive from
+    /// that model's `wer` — accuracy is DERIVED, never hand-picked.
+    func testAccuracyMatchesDocumentedBuckets() throws {
+        let registry = try ModelRegistry.load()
+        let buckets = try XCTUnwrap(registry.scoring?.accuracyByWER)
+        // Ascending by maxWER: the tightest bucket the WER fits wins.
+        let sorted = buckets.sorted { $0.maxWER < $1.maxWER }
+        for model in registry.models {
+            guard let wer = model.wer else { continue }
+            let expected = sorted.first { wer <= $0.maxWER }?.score
+            XCTAssertEqual(
+                model.accuracy, expected,
+                "\(model.id): accuracy \(model.accuracy) != bucket for WER \(wer) (expected \(expected.map(String.init) ?? "nil"))"
+            )
+        }
+    }
+
+    /// Native-streaming models take the streaming speed bucket's score; that
+    /// bucket exists and is the top score (10).
+    func testStreamingSpeedMatchesBucket() throws {
+        let registry = try ModelRegistry.load()
+        let streamingBucket = try XCTUnwrap(
+            registry.scoring?.speedByPass.first { $0.tier == "native-streaming" },
+            "expected a native-streaming speed bucket"
+        )
+        for model in registry.models where model.streaming {
+            XCTAssertEqual(
+                model.speed, streamingBucket.score,
+                "\(model.id): streaming model should take the native-streaming speed score"
+            )
+        }
+    }
+
+    /// Every window agrees with the core `ModelBackend` metadata for its backend —
+    /// and every backend actually parses (so this is a real check, not a skip).
+    func testWindowMatchesBackendForEveryEntry() throws {
+        let registry = try ModelRegistry.load()
+        for model in registry.models {
+            let backend = try XCTUnwrap(
+                model.modelBackend,
+                "\(model.id): backend '\(model.backend)' is not a ModelBackend rawValue"
+            )
+            XCTAssertEqual(
+                model.singlePassWindowSeconds, backend.singlePassWindowSeconds,
+                "\(model.id): window disagrees with ModelBackend.\(backend.rawValue)"
+            )
+        }
+    }
+
+    /// The install asset follows the `<id>-palette4.aimodel` naming the convert
+    /// pipelines emit.
+    func testAssetNameFollowsConvention() throws {
+        let registry = try ModelRegistry.load()
+        for model in registry.models {
+            XCTAssertEqual(
+                model.download.assetName, "\(model.id)-palette4.aimodel",
+                "\(model.id): assetName should be '<id>-palette4.aimodel'"
+            )
+        }
+    }
+
+    /// A default download is always resolvable.
+    func testDefaultDownloadResolves() throws {
+        let registry = try ModelRegistry.load()
+        XCTAssertNotNil(registry.defaultDownload, "a default download must be resolvable")
+    }
+
     /// `ModelRegistry.bundled` (the trapping accessor) resolves.
     func testBundledAccessor() {
         XCTAssertFalse(ModelRegistry.bundled.models.isEmpty)
