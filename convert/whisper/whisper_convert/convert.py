@@ -94,6 +94,50 @@ def _special_tokens(tokenizer) -> dict:
     return specials, languages
 
 
+def _decoder_prompt(model, tokenizer, specials, vocab: int) -> tuple[bool, list]:
+    """Read the checkpoint's ACTUAL forced decoder prompt from the HF model.
+
+    Returns `(is_multilingual, forced_decoder_ids)`.
+
+    Whisper primes its decoder with a fixed prompt after `<|startoftranscript|>`.
+    The two families differ:
+
+      - multilingual (`whisper-base`, `-large-v3`, …): a language slot + a TASK
+        token (`<|transcribe|>` / `<|translate|>`) are forced — e.g.
+        `[[1, None], [2, <|transcribe|>]]` (language `None` = auto-detect).
+      - English-only (`.en`: `whisper-base.en`, `tiny.en`, …): only
+        `<|notimestamps|>` is forced — `[[1, <|notimestamps|>]]`. NO language,
+        NO task token. Feeding `<|en|><|transcribe|>` to a `.en` checkpoint is
+        off-distribution (garbled / instant-EOT output).
+
+    The reliable discriminator is whether a TASK token is forced — `prefix_tokens`
+    alone is not (multilingual auto-detect leaves the language slot empty, so it
+    is also `[sot, notimestamps]`). We fall back to the vocab size (the `.en`
+    checkpoints ship the 51864-token vocab, one language block smaller than the
+    51865/51866 multilingual vocabs) only if the generation config is missing.
+    """
+    transcribe = specials["transcribe"]
+    translate = specials["translate"]
+    forced = []
+    try:
+        forced = list(model.generation_config.forced_decoder_ids or [])
+    except Exception:
+        forced = []
+    task_forced = any(
+        tokid in (transcribe, translate)
+        for (_pos, tokid) in forced
+        if isinstance(tokid, int)
+    )
+    if forced:
+        is_multilingual = task_forced
+    else:
+        # No generation config to read: fall back to the vocab-size heuristic
+        # (English-only checkpoints are exactly one 100-token language block
+        # smaller than the multilingual variants).
+        is_multilingual = vocab >= 51865
+    return is_multilingual, forced
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="whisper-convert")
     parser.add_argument("--model-id", default=DEFAULT_MODEL_ID)
@@ -191,6 +235,11 @@ def main(argv: list[str] | None = None) -> int:
     (output_path / "tokens.txt").write_text("\n".join(pieces) + "\n", encoding="utf-8")
 
     specials, languages = _special_tokens(tokenizer)
+    is_multilingual, forced_decoder_ids = _decoder_prompt(
+        model, tokenizer, specials, vocab)
+    print(
+        f"Decoder prompt: is_multilingual={is_multilingual} "
+        f"forced_decoder_ids={forced_decoder_ids}")
     manifest = {
         "format": 1,
         "n_mels": n_mels,
@@ -205,6 +254,14 @@ def main(argv: list[str] | None = None) -> int:
         "n_head": n_heads,
         "vocab_size": vocab,
         "max_decode_tokens": max_cache_len,
+        # The decoder's forced prompt, read from the checkpoint. `is_multilingual`
+        # drives the Swift prefix: multilingual primes [sot, lang, transcribe,
+        # notimestamps] (language resolved per-locale at runtime); English-only
+        # primes [sot, notimestamps]. `forced_decoder_ids` is the raw HF value,
+        # bundled for provenance. Absence of `is_multilingual` in older assets is
+        # treated as multilingual (back-compat).
+        "is_multilingual": is_multilingual,
+        "forced_decoder_ids": forced_decoder_ids,
         "languages": languages,
         **specials,
     }

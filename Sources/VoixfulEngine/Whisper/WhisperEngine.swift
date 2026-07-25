@@ -11,9 +11,11 @@
 //     tiny/base/small/medium/large-v1/v2, 128 for large-v3; log10 + global
 //     (x+4)/4 normalization, no pre-emphasis.
 //   - Byte-level BPE tokenizer (see `WhisperTokenizer`), NOT SentencePiece.
-//   - Decoder priming: the decode loop starts from the special-token prefix
-//     <|startoftranscript|> <|lang|> <|transcribe|> <|notimestamps|>, then text
-//     tokens until <|endoftext|> (EOT).
+//   - Decoder priming: the decode loop starts from the checkpoint's forced
+//     prefix — multilingual: <|startoftranscript|> <|lang|> <|transcribe|>
+//     <|notimestamps|>; English-only (`.en`): <|startoftranscript|>
+//     <|notimestamps|> (no language, no task token) — then text tokens until
+//     <|endoftext|> (EOT). See `buildPrefix`.
 //
 // The asset is self-contained: `whisper.json` (architecture constants + special
 // token ids) and `tokens.txt` (byte-level BPE vocab) are bundled inside the
@@ -65,6 +67,7 @@ public actor WhisperEngine {
         let noTimestamps: Int32 // <|notimestamps|>
         let langToken: Int32    // <|en|> (or the requested locale's language)
         let specialStart: Int   // first special-token id (tokenizer skips >= this)
+        let isMultilingual: Bool // false for English-only (`.en`) checkpoints
     }
 
     private static let maskNeg: Float = -1e9
@@ -159,13 +162,38 @@ public actor WhisperEngine {
         let englishDefault = (obj["lang_en"] as? Int) ?? Int(sot) + 1
         let langToken = resolveLangToken(
             langs: langs, lang: lang, englishDefault: englishDefault, eot: eot)
+        // English-only (`.en`) checkpoints were trained WITHOUT a language/task
+        // token in the decoder prompt. The converter records which family this
+        // asset is; assets that predate the field are multilingual (back-compat).
+        let isMultilingual = (obj["is_multilingual"] as? Bool) ?? true
         return Config(
             nMels: nMels, melFrames: melFrames, chunkSamples: chunkSamples,
             sampleRate: sampleRate, nFFT: nFFT, hop: hop, tEnc: tEnc, dModel: dModel,
             nLayers: nLayers, nHeads: nHeads, headDim: dModel / nHeads, vocab: vocab,
             maxCacheLen: maxCacheLen, sot: Int32(sot), eot: Int32(eot),
             transcribe: Int32(transcribe), noTimestamps: Int32(noTimestamps),
-            langToken: Int32(langToken), specialStart: specialStart)
+            langToken: Int32(langToken), specialStart: specialStart,
+            isMultilingual: isMultilingual)
+    }
+
+    /// The forced decoder prompt fed to prime the KV cache (consumed, never
+    /// emitted). The two Whisper families were trained with DIFFERENT prompts:
+    ///
+    ///   - multilingual: `[sot, lang, transcribe, notimestamps]` — the language
+    ///     token is resolved per-locale (see `resolveLangToken`).
+    ///   - English-only (`.en`): `[sot, notimestamps]` — NO language, NO task
+    ///     token. Priming a `.en` checkpoint with `<|en|><|transcribe|>` is
+    ///     off-distribution and produces garbled or empty output.
+    ///
+    /// The multilingual branch is byte-identical to the pre-fix behavior, so the
+    /// existing multilingual assets are unaffected.
+    static func buildPrefix(
+        sot: Int32, langToken: Int32, transcribe: Int32, noTimestamps: Int32,
+        isMultilingual: Bool
+    ) -> [Int32] {
+        isMultilingual
+            ? [sot, langToken, transcribe, noTimestamps]
+            : [sot, noTimestamps]
     }
 
     /// Load (and cache) a function by name — lazy so weight materialization is
@@ -236,9 +264,9 @@ public actor WhisperEngine {
     }
 
     /// Greedy autoregressive decode with an external self-attention KV cache.
-    /// Primed with the SOT prefix (<|sot|> <|lang|> <|transcribe|>
-    /// <|notimestamps|>): those tokens are fed to fill the cache but produce no
-    /// text; generation then continues from the last prefix token until EOT.
+    /// Primed with the checkpoint's forced prefix (see `buildPrefix`): those
+    /// tokens are fed to fill the cache but produce no text; generation then
+    /// continues from the last prefix token until EOT.
     private func decode(step decodeFn: InferenceFunction, enc: NDArray) async throws -> [Int32] {
         let cacheShape = [cfg.nLayers, 1, cfg.nHeads, cfg.maxCacheLen, cfg.headDim]
         var kCache = NDArray(shape: cacheShape, scalarType: .float32)
@@ -250,8 +278,11 @@ public actor WhisperEngine {
         var inputND = NDArray(shape: [1, 1], scalarType: .int32)
         var posND = NDArray(shape: [1, 1], scalarType: .int32)
 
-        // The forced prefix: consumed to prime the cache, never emitted.
-        let prefix: [Int32] = [cfg.sot, cfg.langToken, cfg.transcribe, cfg.noTimestamps]
+        // The forced prefix: consumed to prime the cache, never emitted. Built
+        // from the checkpoint's family (`.en` checkpoints omit language + task).
+        let prefix: [Int32] = Self.buildPrefix(
+            sot: cfg.sot, langToken: cfg.langToken, transcribe: cfg.transcribe,
+            noTimestamps: cfg.noTimestamps, isMultilingual: cfg.isMultilingual)
 
         var emitted: [Int32] = []
         var prev = prefix[0]

@@ -64,6 +64,30 @@ final class WhisperTests: XCTestCase {
         XCTAssertEqual(t, 50259)
     }
 
+    // MARK: - Decoder prefix (multilingual vs English-only)
+
+    // Real multilingual ids (whisper-base): sot=50258, <|en|>=50259,
+    // transcribe=50359, notimestamps=50363. A multilingual checkpoint primes the
+    // decoder with the full [sot, lang, transcribe, notimestamps] prompt — this
+    // must stay byte-identical so the shipped multilingual assets are unaffected.
+    func testPrefixMultilingualIncludesLangAndTask() {
+        let p = WhisperEngine.buildPrefix(
+            sot: 50258, langToken: 50259, transcribe: 50359, noTimestamps: 50363,
+            isMultilingual: true)
+        XCTAssertEqual(p, [50258, 50259, 50359, 50363])
+    }
+
+    // Real English-only ids (whisper-base.en): sot=50257, notimestamps=50362.
+    // `.en` checkpoints were trained with the prompt [sot, notimestamps] — NO
+    // language token, NO task token. The lang/transcribe args must be dropped;
+    // feeding them would be off-distribution (garbled / instant-EOT output).
+    func testPrefixEnglishOnlyDropsLangAndTask() {
+        let p = WhisperEngine.buildPrefix(
+            sot: 50257, langToken: 50258, transcribe: 50358, noTimestamps: 50362,
+            isMultilingual: false)
+        XCTAssertEqual(p, [50257, 50362])
+    }
+
     // MARK: - Byte-level BPE detokenization
 
     /// Write a temp tokens.txt (one byte-unicode piece per line, line index ==
