@@ -100,6 +100,15 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     output_path = Path(args.output)
     windows = sorted({int(w) for w in args.windows.split(",")})
+    # The largest window sets the single-pass length and is traced end to end:
+    # its encoder output is windows[-1]/8 frames (FastConformer subsamples 8x),
+    # and project_enc + the runtime's enc_out pad are both sized off proj_t. If
+    # the largest window isn't a multiple of 8, proj_t (floor) is one short of
+    # the true output length and the runtime silently drops the last encoder
+    # frame at the tail. Require exact divisibility so the two always agree.
+    if windows[-1] % 8 != 0:
+        parser.error(f"largest window ({windows[-1]}) must be divisible by 8")
+    proj_t = windows[-1] // 8
 
     quantize_encoder = _build_quantizer(args.quantize)  # before NeMo import
 
@@ -154,8 +163,7 @@ def main(argv: list[str] | None = None) -> int:
         modules["joiner"], token_logits=fused_token_logits
     ).eval()
     # project_enc processes the WHOLE clip's enc_out at once, so it must be
-    # traced at the largest window's encoder-output length (mel frames / 8).
-    proj_t = windows[-1] // 8
+    # traced at the largest window's encoder-output length (proj_t, computed above).
     print(f"Exporting project_enc (T={proj_t}) + join_fused ...")
     converter.add_exported_program(
         export_enc_projector(projector_wrapper, t_out=proj_t),
@@ -201,7 +209,7 @@ def main(argv: list[str] | None = None) -> int:
     manifest = {
         "format": 1,
         "mel_frames": windows[-1],       # largest encoder window (bare `encode`)
-        "proj_t": windows[-1] // 8,       # project_enc / fused-decode enc-out length
+        "proj_t": proj_t,                 # project_enc / fused-decode enc-out length
         "windows": windows,               # full ladder (mel frames), ascending
     }
     (output_path / "parakeet.json").write_text(

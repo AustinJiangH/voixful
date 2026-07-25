@@ -85,15 +85,7 @@ public actor ParakeetTDTEngine {
         // Largest window + projector length from the asset manifest; older
         // assets without parakeet.json keep the historical 1000-frame (10 s)
         // window and T=125 projector.
-        if let data = try? Data(contentsOf: modelURL.appendingPathComponent("parakeet.json")),
-           let m = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-           let mf = m["mel_frames"] as? Int, let pt = m["proj_t"] as? Int {
-            self.melFrames = mf
-            self.projT = pt
-        } else {
-            self.melFrames = 1000
-            self.projT = 125
-        }
+        (self.melFrames, self.projT) = Self.windowConfig(modelURL: modelURL)
         self.encodeWindows = encodeWindowNames(names)
         self.available = names
         self.cpuDecoder = names.contains("project_enc")
@@ -131,6 +123,30 @@ public actor ParakeetTDTEngine {
 
     /// In-flight background loads (prewarm); see `prewarm()`.
     private var pending: [String: Task<InferenceFunction?, Never>] = [:]
+
+    /// Largest encoder window (`mel_frames`) + `project_enc` trace length
+    /// (`proj_t`) read from the asset's `parakeet.json`. Convenience wrapper
+    /// that loads the file; parsing/validation lives in `parseWindowConfig`.
+    static func windowConfig(modelURL: URL) -> (melFrames: Int, projT: Int) {
+        parseWindowConfig(try? Data(contentsOf: modelURL.appendingPathComponent("parakeet.json")))
+    }
+
+    /// Pure parse of a `parakeet.json` payload. Returns the historical defaults
+    /// (1000-frame / 10 s window, T=125 projector) when the manifest is absent,
+    /// malformed, non-positive, or violates `proj_t == mel_frames / 8` — the
+    /// invariant the convert pipeline guarantees (project_enc is traced at
+    /// `windows[-1] // 8`). Falling back WHOLESALE (never mixing a manifest
+    /// field with a default) keeps the encoder window and its projector length
+    /// consistent, so the decode paths can't get a mismatched pad shape.
+    static func parseWindowConfig(_ data: Data?) -> (melFrames: Int, projT: Int) {
+        let fallback = (melFrames: 1000, projT: 125)
+        guard let data,
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let mf = obj["mel_frames"] as? Int, let pt = obj["proj_t"] as? Int,
+              mf > 0, pt > 0, pt == mf / 8
+        else { return fallback }
+        return (mf, pt)
+    }
 
     /// Load (and cache) an encode function by name — lazy so only the window a
     /// clip actually uses gets specialized. Awaits an in-flight prewarm load
