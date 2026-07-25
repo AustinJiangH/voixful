@@ -1,0 +1,21 @@
+[project]
+name = "whisper-convert"
+version = "0.1.0"
+description = "OpenAI Whisper (AED) -> torch.export -> coreai_torch -> Core AI .aimodel. See ./README.md."
+requires-python = ">=3.11"
+license = "Apache-2.0"
+dependencies = [
+    # Whisper is a first-class HF transformers model (no trust_remote_code, not
+    # gated). Pinned <5 for parity with the sibling convert dirs.
+    "transformers>=4.46,<5",
+    "coreai-torch",
+    "torch>=2.5,<3.0",
+    "numpy",
+    "huggingface-hub",
+    "pydantic>=2.6,<2.10",      # required for the coreai_opt --quantize path
+    # coreai-optimization is needed for --quantize (install separately: `uv pip install --pre coreai-opt`)
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

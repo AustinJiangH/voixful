@@ -25,8 +25,10 @@ auto-detected from the `.aimodel`'s function signatures — same `transcribe` /
 | **Granite NAR** `ibm-granite/granite-speech-4.1-2b-nar` | 2.2 B | CTC + single-pass LLM editor (no decode loop) | no (re-transcribe partials) | good (~0.3 s passes) | **en, fr, de, es, pt** | 4.95 (best) |
 | **Cohere Transcribe** `CohereLabs/cohere-transcribe-03-2026` | 2 B | attention encoder-decoder | no (re-transcribe partials) | ok (~0.3 s passes) | **14 languages** | 5.20 |
 | **Canary-Qwen** `nvidia/canary-qwen-2.5b` | 2.5 B | SALM: Conformer + Qwen3-1.7B | no (re-transcribe partials) | sluggish (~3–4 s passes) — prefer for files | English only | 5.06 |
+| **Whisper** `openai/whisper-base` (…tiny/small/large-v3) | 74 M–1.5 B | attention encoder-decoder (fixed 30 s window) | no (re-transcribe partials) | good (30 s single-pass) | **multilingual** (99 languages) | 7.5² |
 
 ¹ Open ASR Leaderboard mean WER (lower is better), for the source checkpoints.
+² Whisper WER is size-dependent (base ≈ 7–10%, large-v3 ≈ 4%); the row lists the `-base` default.
 
 **Streaming vs. live mic.** Only Nemotron streams natively (its encoder is
 cache-aware, so words appear *while* you speak). Every other backend is
@@ -42,10 +44,10 @@ The Swift package layers them behind one model-agnostic façade:
   `VoixfulSpeechModule` / `Transcribing` protocols, `AnalyzerInput`,
   `TranscriptionResult`. Depends on no model.
 - **`VoixfulEngine`** — the engines themselves, organized per architecture under
-  `Nemotron/`, `Parakeet/`, `Cohere/`, `Granite/`, `Canary/`, and `Shared/`.
+  `Nemotron/`, `Parakeet/`, `Cohere/`, `Granite/`, `Canary/`, `Whisper/`, and `Shared/`.
 - **`VoixfulNemotronStreaming`** / **`VoixfulParakeetTDT`** / **`VoixfulCohereTranscribe`**
-  / **`VoixfulGraniteNAR`** / **`VoixfulCanaryQwen`** — thin per-architecture
-  façade targets, each exposing a `Transcribing` conformer over its engine.
+  / **`VoixfulGraniteNAR`** / **`VoixfulCanaryQwen`** / **`VoixfulWhisper`** — thin
+  per-architecture façade targets, each exposing a `Transcribing` conformer over its engine.
 - **`VoixfulFullContext`** — the live-mic wrapper for the non-streaming backends
   (`LiveFullContextTranscriber`): re-transcribes the growing utterance on a
   throttle and commits at silence gaps, giving Parakeet/Cohere/Granite/Canary a
@@ -79,7 +81,7 @@ swift build -c release
 ```
 
 `voixful transcribe` **auto-detects** the backend from the `.aimodel`; override
-with `--backend nemotron|parakeet|cohere|granite|canary` if needed.
+with `--backend nemotron|parakeet|cohere|granite|canary|whisper` if needed.
 
 The model `.aimodel` is **not** committed (it's gitignored, ~hundreds of MB to
 GBs). Get it from Hugging Face (see [Distribution](#distribution)) or regenerate
@@ -137,8 +139,8 @@ _ = try await reader.value
 
 Every backend conforms to the same `Transcribing` protocol, so switching models
 is a near-mechanical rename — swap `NemotronStreamingTranscriber` for
-`ParakeetTDTTranscriber`, `CohereTranscriber`, `GraniteTranscriber`, or
-`CanaryTranscriber` (each in its own product). Core types live in
+`ParakeetTDTTranscriber`, `CohereTranscriber`, `GraniteTranscriber`,
+`CanaryTranscriber`, or `WhisperTranscriber` (each in its own product). Core types live in
 `VoixfulSpeech`: `VoixfulAnalyzer`, the `VoixfulSpeechModule` / `Transcribing`
 protocols, `AnalyzerInput`, `TranscriptionResult`, `ReportingOption`,
 `ResultAttributeOption`. `VoixfulCLI/main.swift` is a full worked example.
@@ -213,12 +215,13 @@ voixful/
 ├── Sources/
 │   ├── VoixfulSpeech/          # brand core (analyzer + protocols + types)
 │   ├── VoixfulTUI/             # reusable live-mic terminal UI
-│   ├── VoixfulEngine/          # engines: Nemotron/ Parakeet/ Cohere/ Granite/ Canary/ Shared/
+│   ├── VoixfulEngine/          # engines: Nemotron/ Parakeet/ Cohere/ Granite/ Canary/ Whisper/ Shared/
 │   ├── VoixfulNemotronStreaming/   # NemotronStreamingTranscriber : Transcribing
 │   ├── VoixfulParakeetTDT/         # ParakeetTDTTranscriber : Transcribing
 │   ├── VoixfulCohereTranscribe/    # CohereTranscriber : Transcribing
 │   ├── VoixfulGraniteNAR/          # GraniteTranscriber : Transcribing
 │   ├── VoixfulCanaryQwen/          # CanaryTranscriber : Transcribing
+│   ├── VoixfulWhisper/             # WhisperTranscriber : Transcribing
 │   ├── VoixfulFullContext/         # LiveFullContextTranscriber (live mic for the above)
 │   └── VoixfulCLI/             # `voixful` executable
 ├── convert/                    # model conversion, one dir per model
@@ -226,7 +229,8 @@ voixful/
 │   ├── parakeet-tdt/           # full-context TDT pipeline
 │   ├── cohere-transcribe/      # attention encoder-decoder pipeline
 │   ├── granite-speech/         # CTC + single-pass LLM editor (NAR) pipeline
-│   └── canary-qwen/            # SALM (Conformer + Qwen3) pipeline
+│   ├── canary-qwen/            # SALM (Conformer + Qwen3) pipeline
+│   └── whisper/                # attention encoder-decoder pipeline (fixed 30 s)
 ├── Tests/ · scripts/ · fixtures/
 ```
 
@@ -263,6 +267,7 @@ Two licenses, by artifact type:
   | Cohere Transcribe | `CohereLabs/cohere-transcribe-03-2026` | upstream (gated — see `convert/cohere-transcribe/README.md`) |
   | Granite NAR | `ibm-granite/granite-speech-4.1-2b-nar` | Apache-2.0 |
   | Canary-Qwen | `nvidia/canary-qwen-2.5b` | CC-BY-4.0 |
+  | Whisper | `openai/whisper-*` | MIT |
 
   See [`MODEL_CARD.md`](MODEL_CARD.md) and the per-model `convert/*/README.md`.
 

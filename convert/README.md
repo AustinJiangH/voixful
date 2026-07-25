@@ -22,9 +22,12 @@ convert/
 ├── granite-speech/           ← Granite Speech 4.1 2B NAR (CTC + single-pass LLM editor)
 │   ├── pyproject.toml · README.md
 │   └── granite_convert/      ← convert.py / extract.py / export.py / models.py
-└── canary-qwen/              ← Canary-Qwen 2.5B (SALM: Conformer + Qwen3-1.7B)
+├── canary-qwen/              ← Canary-Qwen 2.5B (SALM: Conformer + Qwen3-1.7B)
+│   ├── pyproject.toml · README.md
+│   └── canary_convert/       ← convert.py / extract.py / export.py / models.py / …
+└── whisper/                  ← OpenAI Whisper (attention encoder-decoder)
     ├── pyproject.toml · README.md
-    └── canary_convert/       ← convert.py / extract.py / export.py / models.py / …
+    └── whisper_convert/      ← convert.py / extract.py / export.py / models.py
 ```
 
 Each model is self-contained (own `pyproject.toml`, own package, own license note);
@@ -86,3 +89,4 @@ so these compressed models run only via the streaming `feed()` path — the batc
   - **Granite Speech** (`ibm-granite/granite-speech-4.1-2b-nar`) → **Apache-2.0**
     (upstream weights; retain attribution).
   - **Canary-Qwen** (`nvidia/canary-qwen-2.5b`) → **CC-BY-4.0** (attribution only).
+  - **Whisper** (`openai/whisper-*`) → **MIT** (upstream weights; retain attribution).
