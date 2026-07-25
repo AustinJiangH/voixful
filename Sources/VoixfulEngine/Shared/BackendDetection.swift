@@ -22,7 +22,8 @@ public enum ModelBackend: String, Sendable, CaseIterable {
     /// pass — the SMALLER of its fixed encoder window and any downstream decoder
     /// token cap (the same quantity each engine exposes at runtime as
     /// `maxAudioSamples`, here as static registry metadata / 16 kHz seconds):
-    ///   • parakeet — 10 s (1000-frame mel encoder window)
+    ///   • parakeet — 30 s (3000-frame mel encoder window; asset carries the exact
+    ///                value in parakeet.json — older 1000-frame assets are 10 s)
     ///   • cohere   — 15 s (108-token AED decoder cap binds before the 35 s window)
     ///   • granite  — 32 s (largest 1600-frame encoder window; token budget scales)
     ///   • canary   — 36 s (256-token decode cap binds before the 40 s window)
@@ -35,7 +36,7 @@ public enum ModelBackend: String, Sendable, CaseIterable {
     public var singlePassWindowSeconds: Double? {
         switch self {
         case .nemotron: return nil
-        case .parakeet: return 10
+        case .parakeet: return 30
         case .cohere:   return 15
         case .granite:  return 32
         case .canary:   return 36

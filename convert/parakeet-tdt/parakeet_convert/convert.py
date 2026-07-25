@@ -86,18 +86,29 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--windows",
-        default="125,250,375,500,750,1000",
+        default="125,250,375,500,750,1000,1500,2000,3000",
         help=(
             "Comma-separated encoder mel-frame windows. The traced encoder always "
             "runs its full window, so a short clip in a long window burns compute "
             "on zero padding; exporting several windows lets the runtime pick the "
             "smallest >= the clip's frames. The LARGEST keeps the name 'encode' "
-            "(runtime/back-compat contract); smaller ones are 'encode_<frames>'."
+            "(runtime/back-compat contract); smaller ones are 'encode_<frames>'. "
+            "The largest also sets the single-pass window: 3000 frames = 30 s "
+            "(the encoder subsamples 8x, so that's only 375 attention frames)."
         ),
     )
     args = parser.parse_args(argv)
     output_path = Path(args.output)
     windows = sorted({int(w) for w in args.windows.split(",")})
+    # The largest window sets the single-pass length and is traced end to end:
+    # its encoder output is windows[-1]/8 frames (FastConformer subsamples 8x),
+    # and project_enc + the runtime's enc_out pad are both sized off proj_t. If
+    # the largest window isn't a multiple of 8, proj_t (floor) is one short of
+    # the true output length and the runtime silently drops the last encoder
+    # frame at the tail. Require exact divisibility so the two always agree.
+    if windows[-1] % 8 != 0:
+        parser.error(f"largest window ({windows[-1]}) must be divisible by 8")
+    proj_t = windows[-1] // 8
 
     quantize_encoder = _build_quantizer(args.quantize)  # before NeMo import
 
@@ -151,9 +162,11 @@ def main(argv: list[str] | None = None) -> int:
     fused_wrapper = ParakeetJoinFusedForCoreAI(
         modules["joiner"], token_logits=fused_token_logits
     ).eval()
-    print("Exporting project_enc (T=125) + join_fused ...")
+    # project_enc processes the WHOLE clip's enc_out at once, so it must be
+    # traced at the largest window's encoder-output length (proj_t, computed above).
+    print(f"Exporting project_enc (T={proj_t}) + join_fused ...")
     converter.add_exported_program(
-        export_enc_projector(projector_wrapper),
+        export_enc_projector(projector_wrapper, t_out=proj_t),
         entrypoint_name="project_enc",
         input_names=["enc_out"],
         output_names=["enc_proj"],
@@ -188,7 +201,26 @@ def main(argv: list[str] | None = None) -> int:
     )
     (output_path / "pieces.txt").write_text("\n".join(pieces) + "\n", encoding="utf-8")
 
-    print(f"Wrote {output_path} (quantize={args.quantize}) + pieces.txt ({len(pieces)}).")
+    # Manifest so the runtime discovers the largest window (single-pass length)
+    # and the project_enc trace length instead of hardcoding them — the asset
+    # is the source of truth. Older assets without this fall back to 1000/125.
+    import json
+
+    manifest = {
+        "format": 1,
+        "mel_frames": windows[-1],       # largest encoder window (bare `encode`)
+        "proj_t": proj_t,                 # project_enc / fused-decode enc-out length
+        "windows": windows,               # full ladder (mel frames), ascending
+    }
+    (output_path / "parakeet.json").write_text(
+        json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
+    )
+
+    print(
+        f"Wrote {output_path} (quantize={args.quantize}) + pieces.txt "
+        f"({len(pieces)}) + parakeet.json (window={windows[-1]} frames = "
+        f"{windows[-1] * 160 // 16000}s)."
+    )
     return 0
 
 

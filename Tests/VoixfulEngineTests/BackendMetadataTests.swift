@@ -11,7 +11,7 @@ final class BackendMetadataTests: XCTestCase {
         // Full-context backends: the effective single-pass window (min of
         // encoder window and decoder token cap). Must match each engine's
         // maxAudioSamples / 16 000.
-        XCTAssertEqual(ModelBackend.parakeet.singlePassWindowSeconds, 10)
+        XCTAssertEqual(ModelBackend.parakeet.singlePassWindowSeconds, 30)
         XCTAssertEqual(ModelBackend.cohere.singlePassWindowSeconds, 15)
         XCTAssertEqual(ModelBackend.granite.singlePassWindowSeconds, 32)
         XCTAssertEqual(ModelBackend.canary.singlePassWindowSeconds, 36)
