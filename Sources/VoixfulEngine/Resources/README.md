@@ -52,7 +52,7 @@ reproducible. The buckets are also embedded under the top-level `scoring` key.
 Applied: granite 4.95 → 9 · canary 5.06 → 8 · cohere 5.20 → 8 · parakeet-v2
 5.39 → 8 · parakeet-v3 5.66 → 7 · nemotron 5.73 → 7 · whisper-large-v3 7.44 → 5 ·
 whisper-large-v3-turbo 7.83 → 5 · whisper-medium 8.6 → 4 · whisper-small
-9.8 → 4 · whisper-base 12.8 → 3.
+9.8 → 4 · whisper-base.en 10.33 → 3 · whisper-base 12.8 → 3.
 
 ### `speed` — bucketed from native-streaming vs. full-context single-pass latency
 
@@ -69,15 +69,15 @@ Latencies are the warm per-utterance pass numbers measured on M5 Pro (README
 | slower | 2 |
 
 Applied: nemotron (streaming) → 10 · parakeet v2/v3 (~0.07 s) → 9 · granite /
-cohere (~0.29 s) → 7 · whisper-base (~0.25 s) → 7 · whisper-small (~0.55 s) → 5 ·
+cohere (~0.29 s) → 7 · whisper-base / whisper-base.en (~0.25 s) → 7 · whisper-small (~0.55 s) → 5 ·
 whisper-large-v3-turbo (~0.9 s) → 5 · whisper-medium (~1.5 s) → 5 ·
 whisper-large-v3 (~2.5 s) → 3 · canary (~4 s) → 2.
 
 ## Estimated vs. measured
 
 `convertedSizeMB` is **measured** (`du -sm` of the beta3 palette4 asset) for
-every entry — nemotron, parakeet v2/v3, granite, cohere, canary, and all five
-Whisper variants (base, small, medium, large-v3-turbo, large-v3). Canary's number
+every entry — nemotron, parakeet v2/v3, granite, cohere, canary, and all six
+Whisper variants (base, base.en, small, medium, large-v3-turbo, large-v3). Canary's number
 is taken from the decoder-split `canary-qwen-2.5b-palette4-d.aimodel`, the only
 palette4 asset for that model on disk (see its `notes`). The Whisper entries carry
 a `notes` caveat: assets are converted + verified locally, but their Hugging Face

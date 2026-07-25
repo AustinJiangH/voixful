@@ -387,6 +387,33 @@
       }
     },
     {
+      "id": "whisper-base.en",
+      "displayName": "Whisper Base English",
+      "backend": "whisper",
+      "architecture": "attention encoder-decoder (fixed 30 s window)",
+      "upstreamRepo": "openai/whisper-base.en",
+      "streaming": false,
+      "languages": [
+        "en"
+      ],
+      "params": "74M",
+      "convertedSizeMB": 212,
+      "singlePassWindowSeconds": 30,
+      "accuracy": 3,
+      "speed": 7,
+      "shortDescription": "English-only Whisper base — same tiny footprint and fast decode (~0.13s), better English WER than multilingual base.",
+      "wer": 10.33,
+      "license": "MIT",
+      "excludeFromDownloads": false,
+      "notes": "English-only (`.en`) checkpoint: the decoder is primed with [<|startoftranscript|>, <|notimestamps|>] (no language, no task token) per the checkpoint's forced_decoder_ids — the multilingual [sot, <|en|>, <|transcribe|>, notimestamps] prompt is off-distribution here. Converted + verified locally (palette4) at ~/repos/voixful-models/beta3/; HF repo publish pending. wer is the Open ASR Leaderboard 8-dataset English composite average for openai/whisper-base.en.",
+      "download": {
+        "source": "huggingface",
+        "repo": "AustinJiangH/voixful-whisper-base.en",
+        "revision": "main",
+        "assetName": "whisper-base.en-palette4.aimodel"
+      }
+    },
+    {
       "id": "whisper-small",
       "displayName": "Whisper Small",
       "backend": "whisper",
