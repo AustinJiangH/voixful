@@ -33,6 +33,37 @@ final class WhisperTests: XCTestCase {
         XCTAssertEqual(ModelBackend.whisper.singlePassWindowSeconds, 30)
     }
 
+    // MARK: - Language prompt token resolution
+
+    // Real Whisper ids: eot=50257, <|en|>=50259. A language token must sit
+    // strictly above eot; anything else (absent language, or a corrupt manifest
+    // that aliased a language to eot) must fall back to English so the decoder
+    // isn't primed with eot and stopped instantly.
+    func testLangTokenResolvesPresentLanguage() {
+        let t = WhisperEngine.resolveLangToken(
+            langs: ["en": 50259, "fr": 50265], lang: "fr", englishDefault: 50259, eot: 50257)
+        XCTAssertEqual(t, 50265)
+    }
+
+    func testLangTokenFallsBackWhenAbsent() {
+        let t = WhisperEngine.resolveLangToken(
+            langs: ["en": 50259], lang: "yue", englishDefault: 50259, eot: 50257)
+        XCTAssertEqual(t, 50259)
+    }
+
+    func testLangTokenFallsBackWhenAliasedToEot() {
+        // The shipped bug: <|yue|> mapped to eot (50257). Must not prime with it.
+        let t = WhisperEngine.resolveLangToken(
+            langs: ["en": 50259, "yue": 50257], lang: "yue", englishDefault: 50259, eot: 50257)
+        XCTAssertEqual(t, 50259)
+    }
+
+    func testLangTokenFallsBackWhenBelowEot() {
+        let t = WhisperEngine.resolveLangToken(
+            langs: ["en": 50259, "xx": 12345], lang: "xx", englishDefault: 50259, eot: 50257)
+        XCTAssertEqual(t, 50259)
+    }
+
     // MARK: - Byte-level BPE detokenization
 
     /// Write a temp tokens.txt (one byte-unicode piece per line, line index ==

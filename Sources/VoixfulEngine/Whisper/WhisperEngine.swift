@@ -116,6 +116,17 @@ public actor WhisperEngine {
     /// Parse `whisper.json`. The language token defaults to the requested
     /// locale's language (falling back to `<|en|>`), matching Whisper's language
     /// prompt token; the model still auto-detects when primed with a mismatch.
+    /// Resolve the decoder's language-prompt token for `lang` from the manifest's
+    /// language map, falling back to `englishDefault`. Any resolved id that is
+    /// not strictly above `eot` is treated as corrupt/aliased and also falls back:
+    /// every real Whisper language token sits above eot, and a pre-fix manifest
+    /// could map an out-of-checkpoint language (e.g. `<|yue|>`) to eot itself —
+    /// priming the decoder with eot would stop it instantly.
+    static func resolveLangToken(langs: [String: Int], lang: String, englishDefault: Int, eot: Int) -> Int {
+        let token = langs[lang] ?? englishDefault
+        return token > eot ? token : englishDefault
+    }
+
     private static func loadConfig(modelURL: URL, locale: Locale) throws -> Config {
         let url = modelURL.appendingPathComponent("whisper.json")
         guard let data = try? Data(contentsOf: url),
@@ -146,11 +157,8 @@ public actor WhisperEngine {
         let langs = obj["languages"] as? [String: Int] ?? [:]
         let lang = locale.language.languageCode?.identifier ?? "en"
         let englishDefault = (obj["lang_en"] as? Int) ?? Int(sot) + 1
-        var langToken = langs[lang] ?? englishDefault
-        // Defensive: a language absent from the checkpoint can resolve to a bogus
-        // id that aliases eot (e.g. pre-fix manifests mapped <|yue|> -> eot);
-        // priming the decoder with EOT stops it instantly. Fall back to English.
-        if langToken <= eot { langToken = englishDefault }
+        let langToken = resolveLangToken(
+            langs: langs, lang: lang, englishDefault: englishDefault, eot: eot)
         return Config(
             nMels: nMels, melFrames: melFrames, chunkSamples: chunkSamples,
             sampleRate: sampleRate, nFFT: nFFT, hop: hop, tEnc: tEnc, dModel: dModel,
