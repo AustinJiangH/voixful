@@ -31,6 +31,16 @@ from torch import nn
 
 MAX_SEQ = 1024
 
+# KV cache STORAGE dtype (state I/O boundary); compute stays fp32. fp16 lets the
+# AR decoder land on the ANE (the runtime rejects fp32 MemRef states). This is
+# the single source of truth: the step/prefill graphs allocate/cast to it, and
+# convert.py writes its string name into canary.json ("kv_dtype") so the engine
+# can pick the matching cache dtype. Flip to torch.float32 for a legacy-style
+# fp32 asset. KV_CACHE_DTYPE_STR must be a name the Swift engine understands
+# ("float16" / "float32").
+KV_CACHE_DTYPE = torch.float16
+KV_CACHE_DTYPE_STR = "float16" if KV_CACHE_DTYPE == torch.float16 else "float32"
+
 
 def _rms_norm(x: torch.Tensor, weight: torch.Tensor, eps: float) -> torch.Tensor:
     v = x.float()
@@ -125,13 +135,14 @@ class QwenStepForCoreAI(nn.Module):
         self.embed = hf_model.model.embed_tokens
         c = self.core
         shape = (c.n_layers, 1, c.n_kv, MAX_SEQ, c.head_dim)
-        # KV cache STORAGE is fp16 (state I/O boundary); compute stays fp32.
-        # ANE requires fp16 MemRef states — the runtime's only sanctioned state
-        # I/O cast is "F16 MemRef <-> F32 Tensor", so a fp32 cache state forces
-        # a GPU fallback. Storing fp16 and up/down-casting inside the graph puts
-        # exactly that blessed cast on the boundary. See models.py fp16 notes.
-        self.register_buffer("k_cache", torch.zeros(shape, dtype=torch.float16))
-        self.register_buffer("v_cache", torch.zeros(shape, dtype=torch.float16))
+        # KV cache STORAGE is KV_CACHE_DTYPE (state I/O boundary); compute stays
+        # fp32. ANE requires fp16 MemRef states — the runtime's only sanctioned
+        # state I/O cast is "F16 MemRef <-> F32 Tensor", so a fp32 cache state
+        # forces a GPU fallback. Storing fp16 and up/down-casting inside the
+        # graph puts exactly that blessed cast on the boundary. See models.py
+        # fp16 notes.
+        self.register_buffer("k_cache", torch.zeros(shape, dtype=KV_CACHE_DTYPE))
+        self.register_buffer("v_cache", torch.zeros(shape, dtype=KV_CACHE_DTYPE))
         self.register_buffer("arangeS", torch.arange(MAX_SEQ, dtype=torch.int32))
 
     def forward(self, tok: torch.Tensor, pos: torch.Tensor) -> torch.Tensor:
@@ -155,8 +166,8 @@ class QwenStepForCoreAI(nn.Module):
             # k*onehot is [1,KV,MAX,D] with k's row at pos, zeros elsewhere.
             kf = self.k_cache[li].float() * (1 - onehot[0]) + (k * onehot)[0]
             vf = self.v_cache[li].float() * (1 - onehot[0]) + (v * onehot)[0]
-            self.k_cache[li] = kf.to(torch.float16)
-            self.v_cache[li] = vf.to(torch.float16)
+            self.k_cache[li] = kf.to(KV_CACHE_DTYPE)
+            self.v_cache[li] = vf.to(KV_CACHE_DTYPE)
             att = c.attend(layer, q, kf, vf, keymask)
             x = x + att
             h = _rms_norm(x, layer.post_attention_layernorm.weight, c.eps)
@@ -219,9 +230,9 @@ class QwenPrefillForCoreAI(QwenPrefillCore):
         onehot = (torch.arange(L, dtype=torch.int32) == last_idx.reshape(1)).to(x.dtype)
         last = torch.matmul(onehot.view(1, 1, L), x).squeeze(1)
         tok = torch.argmax(c.lm_head(last), dim=-1).to(torch.int32)
-        # fp16 outputs: the host loads these into the fp16 step KV state.
-        k_out = torch.cat(new_k, dim=0).to(torch.float16)   # [28,KV,L,D]
-        v_out = torch.cat(new_v, dim=0).to(torch.float16)
+        # KV-state-dtype outputs: the host loads these into the step KV state.
+        k_out = torch.cat(new_k, dim=0).to(KV_CACHE_DTYPE)   # [28,KV,L,D]
+        v_out = torch.cat(new_v, dim=0).to(KV_CACHE_DTYPE)
         return tok, k_out, v_out
 
 

@@ -36,6 +36,7 @@ import coreai_torch
 from .export import export_embed, export_encoder, export_prefill, export_step
 from .extract import extract_modules
 from .models import (
+    KV_CACHE_DTYPE_STR,
     MAX_SEQ,
     CanaryEncoderForCoreAI,
     QwenEmbedForCoreAI,
@@ -243,6 +244,11 @@ def main(argv: list[str] | None = None) -> int:
                 "eos_id": EOS,
                 "max_seq": MAX_SEQ,
                 "embed_n": EMBED_N,
+                # KV state dtype so the engine allocates a matching cache. The
+                # engine also auto-detects this from the decode graph's state
+                # descriptor; this field is the documented fallback (assets that
+                # omit it are treated as legacy fp32).
+                "kv_dtype": KV_CACHE_DTYPE_STR,
                 "asr_pre_ids": asr_pre,
                 "asr_post_ids": asr_post,
                 "fmt_pre_ids": fmt_pre,
