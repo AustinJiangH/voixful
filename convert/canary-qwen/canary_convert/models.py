@@ -108,7 +108,9 @@ class _QwenCore(nn.Module):
         probs = torch.softmax(scores.float(), dim=-1).to(q.dtype)
         out = torch.matmul(probs, vr)
         out = out.transpose(1, 2).reshape(1, T, self.n_heads * self.head_dim)
-        return layer.self_attn.o_proj(out)
+        # o_proj weights are fp32; the step path runs attention in fp16, so lift
+        # `out` back to fp32 here (no-op for the fp32 prefill path).
+        return layer.self_attn.o_proj(out.float())
 
     def mlp(self, layer, x):
         m = layer.mlp
@@ -135,12 +137,10 @@ class QwenStepForCoreAI(nn.Module):
         self.embed = hf_model.model.embed_tokens
         c = self.core
         shape = (c.n_layers, 1, c.n_kv, MAX_SEQ, c.head_dim)
-        # KV cache STORAGE is KV_CACHE_DTYPE (state I/O boundary); compute stays
-        # fp32. ANE requires fp16 MemRef states — the runtime's only sanctioned
-        # state I/O cast is "F16 MemRef <-> F32 Tensor", so a fp32 cache state
-        # forces a GPU fallback. Storing fp16 and up/down-casting inside the
-        # graph puts exactly that blessed cast on the boundary. See models.py
-        # fp16 notes.
+        # KV cache STORAGE is KV_CACHE_DTYPE (fp16). The decode step reads,
+        # one-hot-writes and attends the cache entirely in fp16 (fp32 only inside
+        # softmax and for o_proj) — see forward() for why the earlier
+        # per-layer up/down-cast to fp32 was removed (multi-window compile blow-up).
         self.register_buffer("k_cache", torch.zeros(shape, dtype=KV_CACHE_DTYPE))
         self.register_buffer("v_cache", torch.zeros(shape, dtype=KV_CACHE_DTYPE))
         self.register_buffer("arangeS", torch.arange(MAX_SEQ, dtype=torch.int32))
@@ -151,7 +151,19 @@ class QwenStepForCoreAI(nn.Module):
         x = self.embed(tok.to(torch.int64)).view(1, 1, c.hidden)
         cos = torch.nn.functional.embedding(p, c.rope_cos)  # [1, D]
         sin = torch.nn.functional.embedding(p, c.rope_sin)
-        onehot = (self.arangeS == pos.reshape(1)).to(x.dtype).view(1, 1, MAX_SEQ, 1)
+        # One-hot write AND attention run entirely in the KV cache's fp16 STORAGE
+        # dtype: the cache is read/combined/attended fp16 with no per-layer
+        # full-cache up-cast (`self.k_cache[li].float()`) and no full-cache
+        # down-cast on write. Those large fp32 cast temporaries — 2 per k/v per
+        # layer × 28 layers × 2 step graphs — are what blow up the Core-AI
+        # lowering pass once the multi-window prefill graphs are added (the
+        # single-window fp16 build tolerated them; the 3-window one hangs at
+        # ~20 GB RSS). This is standard fp16 decode: softmax still runs in fp32
+        # inside attend(), and attend() lifts the attn output back to fp32 for
+        # the fp32 o_proj. Cache stays fp16 end to end, so the state I/O boundary
+        # the engine auto-detects is unchanged (kv_dtype float16).
+        onehot = (self.arangeS == pos.reshape(1)).to(KV_CACHE_DTYPE).view(1, 1, MAX_SEQ, 1)
+        inv = (1 - onehot)[0]
         keymask = torch.where(
             self.arangeS.view(1, 1, 1, MAX_SEQ) <= pos.reshape(1, 1, 1, 1),
             torch.zeros(1, dtype=x.dtype),
@@ -159,16 +171,17 @@ class QwenStepForCoreAI(nn.Module):
         )
         for li, layer in enumerate(c.model.layers):
             h = _rms_norm(x, layer.input_layernorm.weight, c.eps)
-            q, k, v = c.attn_qkv(layer, h, cos, sin)       # q/k/v: [1,·,1,D]
-            # Read fp16 state -> fp32 (the ANE-blessed "F16 MemRef -> F32 Tensor"
-            # cast), do the one-hot write in fp32, store fp32 -> fp16 state.
-            # Broadcast one-hot write at row `pos` (no scatter, no .repeat()):
-            # k*onehot is [1,KV,MAX,D] with k's row at pos, zeros elsewhere.
-            kf = self.k_cache[li].float() * (1 - onehot[0]) + (k * onehot)[0]
-            vf = self.v_cache[li].float() * (1 - onehot[0]) + (v * onehot)[0]
-            self.k_cache[li] = kf.to(KV_CACHE_DTYPE)
-            self.v_cache[li] = vf.to(KV_CACHE_DTYPE)
-            att = c.attend(layer, q, kf, vf, keymask)
+            q, k, v = c.attn_qkv(layer, h, cos, sin)       # q/k/v fp32: [1,·,1,D]
+            k = k.to(KV_CACHE_DTYPE)
+            v = v.to(KV_CACHE_DTYPE)
+            # Broadcast one-hot write at row `pos` (no scatter, no .repeat()),
+            # in fp16 — a lossless select: rows != pos keep their stored value,
+            # the pos row becomes the new k/v. k*onehot is [1,KV,MAX,D] with k's
+            # row at pos, zeros elsewhere.
+            self.k_cache[li] = self.k_cache[li] * inv + (k * onehot)[0]
+            self.v_cache[li] = self.v_cache[li] * inv + (v * onehot)[0]
+            att = c.attend(layer, q.to(KV_CACHE_DTYPE),
+                           self.k_cache[li], self.v_cache[li], keymask)
             x = x + att
             h = _rms_norm(x, layer.post_attention_layernorm.weight, c.eps)
             x = x + c.mlp(layer, h)
