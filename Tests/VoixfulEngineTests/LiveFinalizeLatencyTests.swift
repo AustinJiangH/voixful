@@ -243,6 +243,30 @@ final class LiveFinalizeLatencyTests: XCTestCase {
         XCTAssertFalse(results.contains { $0.isFinal }, "a cancelled job emits no final result")
     }
 
+    // finalize() AFTER cancel() (reachable in the resident supersede path: a new
+    // vend cancels the prior, then the app's end() still calls finalize()) must
+    // run NO final pass — it would re-occupy the shared engine and delay the
+    // superseding job. Gate is OPEN, so a leaked final pass would `complete`.
+    func testFinalizeAfterCancelRunsNoFinalPass() async throws {
+        gate.reset()
+        gate.open()                     // any pass that runs would complete immediately
+        let live = makeLive()
+        try await live.prepare()
+        let collector = collect(live)
+
+        // 800 samples < the 1600-sample (100 ms) stride → no pass fires on consume.
+        try await feed([Float](repeating: 5, count: 800), into: live)
+        XCTAssertEqual(gate.completed, 0, "no pass should have run yet")
+
+        await live.cancel()             // hard abort — finishes the stream
+        try await live.finalize()       // must be a no-op (guard on cancelled)
+
+        XCTAssertEqual(gate.completed, 0, "finalize after cancel must run no final pass")
+        XCTAssertEqual(gate.bailed, 0)
+        let results = await collector.value
+        XCTAssertFalse(results.contains { $0.isFinal }, "no final result after cancel")
+    }
+
     // MARK: - Item 1: refreshStride is threaded through the resident load path
 
     // A non-default refreshStrideMS must reach the vended resident transcriber. A

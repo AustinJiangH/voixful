@@ -240,6 +240,10 @@ public actor LiveFullContextTranscriber<Engine: FullContextEngine>: Transcribing
     }
 
     private func commitHead(text: String, samples: Int) {
+        // A completed commit means the model is warm — stop re-showing the
+        // "[ preparing… ]" banner in a commit-dominated session (large models /
+        // long dictation, where plain refreshes may never land between commits).
+        producedFirstResult = true
         let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if !t.isEmpty {
             committedText = committedText.isEmpty ? t : committedText + " " + t
@@ -260,6 +264,13 @@ public actor LiveFullContextTranscriber<Engine: FullContextEngine>: Transcribing
     }
 
     public func finalize() async throws {
+        // Re-entry, or finalize-after-cancel: an in-flight finalize (or cancel())
+        // already owns the terminal. Return WITHOUT finishing — a second call must
+        // not cut off the first finalize's `isFinal`, nor (in the resident/
+        // supersede path) run a second heavy `LongForm.transcribe` that re-occupies
+        // the shared engine and delays a superseding job. cancel() already
+        // finished the stream, so there's nothing left to do.
+        guard !finalizing, !cancelled else { return }
         guard let engine else { continuation.finish(); return }
         do {
             finalizing = true
