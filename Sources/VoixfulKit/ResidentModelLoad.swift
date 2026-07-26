@@ -29,16 +29,24 @@ import VoixfulEngine
 ///   - offload: idle + memory-pressure policy; `.pinned` disables both.
 ///   - piecesURL: SentencePiece vocab for parakeet/cohere/granite/canary;
 ///     defaults to the sibling `pieces.txt` bundled inside the asset.
+///   - refreshStrideMS: live-partial refresh cadence for the vended
+///     transcribers (default 700 ms). The app sets this per model to honor its
+///     interval policy; ignored by the streaming (Nemotron) backend.
+///   - commitThresholdSeconds: live-buffer size that triggers a head commit
+///     (default 24 s); clamped down to the engine window at prepare.
 public func loadResidentModel(
     model: URL,
     locale: Locale = Locale(identifier: "en-US"),
     backend: ModelBackend? = nil,
     offload: OffloadPolicy = .default,
-    piecesURL: URL? = nil
+    piecesURL: URL? = nil,
+    refreshStrideMS: Int = 700,
+    commitThresholdSeconds: Int = 24
 ) async throws -> any ResidentModel {
     let resolved = try backend ?? ModelBackend.detect(modelURL: model)
     let pieces = piecesURL ?? model.appendingPathComponent("pieces.txt")
     let ctx = ResidentContext(
-        modelURL: model, piecesURL: pieces, locale: locale, offload: offload)
+        modelURL: model, piecesURL: pieces, locale: locale, offload: offload,
+        refreshStrideMS: refreshStrideMS, commitThresholdSeconds: commitThresholdSeconds)
     return try await BackendRegistry.entry(for: resolved).loadResident(ctx)
 }

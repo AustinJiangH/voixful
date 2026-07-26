@@ -68,12 +68,21 @@ public struct ResidentContext: Sendable {
     public let piecesURL: URL
     public let locale: Locale
     public let offload: OffloadPolicy
+    /// Live-partial refresh cadence and head-commit threshold for the vended
+    /// full-context transcribers. Default to the transcriber defaults so the
+    /// resident path preserves the app's per-model interval policy. Ignored by
+    /// the streaming (Nemotron) row.
+    public let refreshStrideMS: Int
+    public let commitThresholdSeconds: Int
 
-    public init(modelURL: URL, piecesURL: URL, locale: Locale, offload: OffloadPolicy) {
+    public init(modelURL: URL, piecesURL: URL, locale: Locale, offload: OffloadPolicy,
+                refreshStrideMS: Int = 700, commitThresholdSeconds: Int = 24) {
         self.modelURL = modelURL
         self.piecesURL = piecesURL
         self.locale = locale
         self.offload = offload
+        self.refreshStrideMS = refreshStrideMS
+        self.commitThresholdSeconds = commitThresholdSeconds
     }
 }
 
@@ -163,7 +172,10 @@ public enum BackendRegistry {
             loadResident: { ctx in
                 let model = ResidentFullContextModel<Engine>(
                     modelURL: ctx.modelURL, piecesURL: ctx.piecesURL,
-                    locale: ctx.locale, offload: ctx.offload)
+                    locale: ctx.locale,
+                    refreshStrideMS: ctx.refreshStrideMS,
+                    commitThresholdSeconds: ctx.commitThresholdSeconds,
+                    offload: ctx.offload)
                 await model.warmUp()
                 return model
             })

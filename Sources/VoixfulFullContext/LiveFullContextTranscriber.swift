@@ -39,11 +39,28 @@ public actor LiveFullContextTranscriber<Engine: FullContextEngine>: Transcribing
     private var engine: Engine?
     private var utterance: [Float] = []
     private var samplesAtLastRefresh = 0
+    /// A HEAD-COMMIT pass is running. It freezes text into `committedText` and
+    /// drops those samples from `utterance`, so it MUST be awaited (abandoning it
+    /// would lose audio / committed text). `finalize` waits this out.
+    private var commitInFlight = false
+    /// A plain VOLATILE refresh pass is running. It only yields a volatile
+    /// partial and mutates no committed state, so it is safe to abandon — the
+    /// final pass supersedes it. `finalize` drops it immediately.
     private var refreshInFlight = false
+    /// Bumped to invalidate an in-flight/unapplied plain refresh: a refresh Task
+    /// applies its `yield` (and clears `refreshInFlight`) only while its captured
+    /// generation still matches. `finalize` bumps it so the volatile pass it
+    /// abandons can't yield after the final.
+    private var refreshGeneration = 0
     /// Set by `cancel()`. Once true, `maybeRefresh` starts no NEW pass and the
     /// results stream is finished — so a cancelled live job promptly frees the
     /// shared (resident) engine for the superseding job.
     private var cancelled = false
+    /// Set by `finalize()`. Stops a post-commit `maybeRefresh` (fired from
+    /// `commitHead` after a head-commit that `finalize` awaited) from launching a
+    /// fresh volatile pass that would race the final — the tail is about to be
+    /// transcribed by the final pass anyway.
+    private var finalizing = false
     /// The single in-flight detached refresh/commit pass (only one runs at a
     /// time — `refreshInFlight` gates it). Held so `cancel()` can cancel it,
     /// which trips `Task.isCancelled` inside the engine's decode loop so even the
@@ -160,7 +177,7 @@ public actor LiveFullContextTranscriber<Engine: FullContextEngine>: Transcribing
     /// quietest gap, freeze that text, drop those samples. Detached so the
     /// mic feed is never blocked.
     private func maybeRefresh() {
-        guard !cancelled, let engine, !refreshInFlight,
+        guard !cancelled, !finalizing, let engine, !commitInFlight, !refreshInFlight,
               utterance.count - samplesAtLastRefresh >= refreshStride else { return }
         if !producedFirstResult {
             continuation.yield(TranscriptionResult(
@@ -168,10 +185,10 @@ public actor LiveFullContextTranscriber<Engine: FullContextEngine>: Transcribing
                 range: CMTimeRange(start: .zero, duration: .zero),
                 isFinal: false))
         }
-        refreshInFlight = true
         samplesAtLastRefresh = utterance.count
 
         if utterance.count >= commitThreshold {
+            commitInFlight = true
             let splitAt = LongForm.quietestSplit(
                 utterance, from: commitThreshold / 2, to: commitThreshold)
             let head = Array(utterance[..<splitAt])
@@ -188,10 +205,16 @@ public actor LiveFullContextTranscriber<Engine: FullContextEngine>: Transcribing
             return
         }
 
+        // Plain volatile refresh. Tag it with the current generation so a
+        // `finalize` that bumps the generation while this pass is in flight makes
+        // it drop its (about-to-be-superseded) result instead of yielding it.
+        let gen = refreshGeneration
+        refreshInFlight = true
         let snapshot = utterance
         let prefix = committedText
         refreshTask = Task { [continuation] in
-            if let transcript = try? await engine.transcribe(audio: snapshot) {
+            let transcript = try? await engine.transcribe(audio: snapshot)
+            if gen == self.refreshGeneration, let transcript {
                 let joined = prefix.isEmpty
                     ? transcript.text
                     : prefix + " " + transcript.text
@@ -202,23 +225,32 @@ public actor LiveFullContextTranscriber<Engine: FullContextEngine>: Transcribing
                         duration: CMTime(seconds: Double(snapshot.count) / 16_000, preferredTimescale: 1_000)),
                     isFinal: false))
             }
-            self.refreshDone()
+            self.refreshDone(gen: gen)
         }
     }
 
-    private func refreshDone() {
-        refreshInFlight = false
+    /// A plain refresh Task finished. Only clear `refreshInFlight` if this pass is
+    /// still current — a `finalize` that abandoned it already cleared the flag and
+    /// moved the generation on, and clearing it here for a stale pass is a no-op
+    /// we skip to keep the intent explicit.
+    private func refreshDone(gen: Int) {
         producedFirstResult = true
+        guard gen == refreshGeneration else { return }
+        refreshInFlight = false
     }
 
     private func commitHead(text: String, samples: Int) {
+        // A completed commit means the model is warm — stop re-showing the
+        // "[ preparing… ]" banner in a commit-dominated session (large models /
+        // long dictation, where plain refreshes may never land between commits).
+        producedFirstResult = true
         let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if !t.isEmpty {
             committedText = committedText.isEmpty ? t : committedText + " " + t
         }
         utterance.removeFirst(min(samples, utterance.count))
         samplesAtLastRefresh = 0
-        refreshInFlight = false
+        commitInFlight = false
         maybeRefresh()  // tail may already be past the refresh stride
     }
 
@@ -227,16 +259,37 @@ public actor LiveFullContextTranscriber<Engine: FullContextEngine>: Transcribing
     /// commit must never silently drop audio. Reset the refresh accounting so
     /// the retry fires without waiting a whole extra stride.
     private func commitFailed() {
-        refreshInFlight = false
+        commitInFlight = false
         samplesAtLastRefresh = 0
     }
 
     public func finalize() async throws {
+        // Re-entry, or finalize-after-cancel: an in-flight finalize (or cancel())
+        // already owns the terminal. Return WITHOUT finishing — a second call must
+        // not cut off the first finalize's `isFinal`, nor (in the resident/
+        // supersede path) run a second heavy `LongForm.transcribe` that re-occupies
+        // the shared engine and delays a superseding job. cancel() already
+        // finished the stream, so there's nothing left to do.
+        guard !finalizing, !cancelled else { return }
         guard let engine else { continuation.finish(); return }
         do {
-            // Wait out any in-flight refresh/commit so the tail buffer and
-            // committedText are settled before the final pass.
-            while refreshInFlight {
+            finalizing = true
+            // A plain volatile refresh is about to be superseded by the final
+            // pass, so don't wait it out: bump the generation (its result, if it
+            // ever lands, is now stale and won't yield) and — when no head-commit
+            // is in flight — drop our in-flight flag and cancel the detached pass
+            // so it stops burning the ANE and frees it for the final sooner. A
+            // head-commit, by contrast, mutates committedText/utterance and must
+            // never be cancelled: leave `refreshTask` alone while one is running.
+            refreshGeneration &+= 1
+            if !commitInFlight {
+                refreshInFlight = false
+                refreshTask?.cancel()
+            }
+            // Still wait out an in-flight HEAD COMMIT so the tail buffer and
+            // committedText are settled before the final pass (it is not
+            // abandonable — see above).
+            while commitInFlight {
                 try await Task.sleep(nanoseconds: 20_000_000)
             }
             // Segment defensively: the tail is normally below the window after
