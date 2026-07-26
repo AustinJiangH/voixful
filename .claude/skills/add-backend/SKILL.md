@@ -5,8 +5,9 @@ description: >-
   "add a model", "add a backend", "wire up <model> (Parakeet/Cohere/Granite/Canary/
   Whisper/etc.)", "support a new .aimodel", or "register a new transcriber". Covers
   the three registries that must be updated in lockstep (the ModelBackend enum +
-  detection heuristic, Package.swift products/targets, and the CLI switches), the
-  FullContextEngine protocol contract, the convert/ pipeline, and the docs/scripts.
+  detection heuristic, Package.swift products/targets, and the VoixfulKit
+  BackendRegistry table), the FullContextEngine protocol contract, the convert/
+  pipeline, and the docs/scripts.
 ---
 
 # Adding a new backend to Voixful
@@ -15,7 +16,7 @@ Voixful auto-detects the backend from an `.aimodel`'s function signatures and ru
 every model through one `Transcribing` façade. Adding a model means creating a
 conversion pipeline + an engine, then registering it in **three places** that must
 stay in sync. Miss one and you get: builds-but-never-detected (registry 1),
-doesn't-compile (registry 2), or detected-but-CLI-can't-instantiate (registry 3).
+doesn't-compile (registry 2), or detected-but-can't-instantiate (registry 3).
 
 ## Step 0 — Pick the backend shape
 
@@ -38,8 +39,12 @@ The rest of this guide assumes the full-context path unless noted.
 | # | File | What to add |
 |---|------|-------------|
 | 1 | `Sources/VoixfulEngine/Shared/BackendDetection.swift` | a `ModelBackend` enum case **and** a `classify(_:)` rule keyed on a distinctive asset function name |
-| 2 | `Package.swift` | a `.library` product, a `.target`, **and** the target in `VoixfulCLI`'s `dependencies` |
-| 3 | `Sources/VoixfulCLI/main.swift` | `import Voixful<Model>` + a `case` in **both** the `Transcribe` and `Mic` switches |
+| 2 | `Package.swift` | a `.library` product, a `.target`, **and** the target in `VoixfulKit`'s `dependencies` |
+| 3 | `Sources/VoixfulKit/BackendRegistry.swift` | `import Voixful<Model>` + a `case` in the `entry(for:)` switch supplying `makeBatch`/`makeLive`/`loadResident` (a full-context model can reuse the `fullContext(_:batch:)` helper) |
+
+> The `BackendRegistry` table is the single place the CLI (both `transcribe` and
+> `mic`) and `loadResidentModel` dispatch through, so one registry row replaces
+> what used to be two separate CLI switch edits — still 3 sites total.
 
 ## Step-by-step
 
@@ -111,13 +116,25 @@ Three edits:
 .library(name: "Voixful<Model>", targets: ["Voixful<Model>"]),          // products
 .target(name: "Voixful<Model>",
         dependencies: ["VoixfulSpeech", "VoixfulEngine", "VoixfulFullContext"]),  // targets
-// add "Voixful<Model>" to the VoixfulCLI executableTarget dependencies list
+// add "Voixful<Model>" to the VoixfulKit target's dependencies list
 ```
 
-### 6. Registry 3 — CLI (`Sources/VoixfulCLI/main.swift`)
+### 6. Registry 3 — the registry table (`Sources/VoixfulKit/BackendRegistry.swift`)
 - `import Voixful<Model>` at the top.
-- `Transcribe.run()` switch (batch): `case .<model>: transcriber = <Model>Transcriber(modelURL: modelURL, piecesURL: piecesURL(modelURL), locale: locale)`
-- `Mic.run()` switch (live): `case .<model>: transcriber = LiveFullContextTranscriber<<Model>Engine>(modelURL: modelURL, piecesURL: piecesURL, locale: locale)`
+- add a `case .<model>:` to `entry(for:)`. A full-context backend is a one-liner
+  via the shared helper (it supplies live + resident automatically; you supply
+  only the batch transcriber):
+  ```swift
+  case .<model>:
+      return fullContext(<Model>Engine.self,
+          batch: { ctx in <Model>Transcriber(
+              modelURL: ctx.modelURL, piecesURL: ctx.piecesURL, locale: ctx.locale) })
+  ```
+  A bespoke/streaming backend returns a `BackendEntry(makeBatch:makeLive:loadResident:)`
+  literal instead (see the `.nemotron` row).
+
+This single row is what feeds `voixful transcribe`, `voixful mic`, AND
+`loadResidentModel(...)` — no CLI or resident-loader edits needed.
 
 ### 7. Docs & scripts
 - README.md: add a row to the backend table.

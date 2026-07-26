@@ -24,6 +24,9 @@ let package = Package(
         .library(name: "VoixfulWhisper", targets: ["VoixfulWhisper"]),
         // Shared full-context (batch) transcriber lifecycle (Parakeet + Cohere).
         .library(name: "VoixfulFullContext", targets: ["VoixfulFullContext"]),
+        // Umbrella: imports every backend; holds the BackendRegistry table + the
+        // ResidentModel.load(...) entry point.
+        .library(name: "VoixfulKit", targets: ["VoixfulKit"]),
         // Brand CLI: `voixful transcribe …`.
         .executable(name: "voixful", targets: ["VoixfulCLI"]),
 
@@ -80,18 +83,30 @@ let package = Package(
             dependencies: ["VoixfulSpeech", "VoixfulEngine", "VoixfulFullContext"]
         ),
 
-        // MARK: Brand CLI
-        .executableTarget(
-            name: "VoixfulCLI",
+        // MARK: Umbrella — every backend + the registry table + ResidentModel.load
+        .target(
+            name: "VoixfulKit",
             dependencies: [
                 "VoixfulSpeech",
-                "VoixfulTUI",
+                "VoixfulEngine",
+                "VoixfulFullContext",
                 "VoixfulNemotronStreaming",
                 "VoixfulParakeetTDT",
                 "VoixfulCohereTranscribe",
                 "VoixfulGraniteNAR",
                 "VoixfulCanaryQwen",
                 "VoixfulWhisper",
+            ]
+        ),
+
+        // MARK: Brand CLI
+        .executableTarget(
+            name: "VoixfulCLI",
+            dependencies: [
+                "VoixfulSpeech",
+                "VoixfulTUI",
+                "VoixfulKit",
+                "VoixfulNemotronStreaming",
                 "VoixfulEngine",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ],
@@ -127,7 +142,7 @@ let package = Package(
         ),
         .testTarget(
             name: "VoixfulEngineTests",
-            dependencies: ["VoixfulEngine", "VoixfulFullContext", "VoixfulGraniteNAR", "VoixfulWhisper", "VoixfulSpeech"]
+            dependencies: ["VoixfulEngine", "VoixfulFullContext", "VoixfulNemotronStreaming", "VoixfulGraniteNAR", "VoixfulWhisper", "VoixfulSpeech", "VoixfulKit"]
         ),
     ]
 )

@@ -11,13 +11,8 @@ import AVFoundation
 import Foundation
 import VoixfulSpeech
 import VoixfulTUI
+import VoixfulKit
 import VoixfulNemotronStreaming
-import VoixfulParakeetTDT
-import VoixfulCohereTranscribe
-import VoixfulGraniteNAR
-import VoixfulCanaryQwen
-import VoixfulWhisper
-import VoixfulFullContext
 import VoixfulEngine
 
 @main
@@ -78,35 +73,16 @@ struct Transcribe: AsyncParsableCommand {
         let fns = try ModelBackend.assetFunctions(modelURL: modelURL)
         let resolved = backend ?? ModelBackend.classify(fns)
 
+        // One data-driven registry row per backend (VoixfulKit) replaces the old
+        // hand-written switch. Behavior is preserved: Nemotron's batch-vs-stream
+        // choice keys on `preprocess_audio`, Canary honors `--bullets`, the rest
+        // build their shared full-context transcriber.
         let transcriber: any Transcribing
         do {
-            switch resolved {
-            case .nemotron:
-                // Batch needs the baked `preprocess_audio`; without it (every
-                // convert-pipeline model), stream. No user flag required.
-                transcriber = try NemotronStreamingTranscriber(
-                    modelURL: modelURL, locale: locale, chunkSizeMS: chunk,
-                    mode: fns.names.contains("preprocess_audio") ? .batch : .streaming,
-                    reportingOptions: [], attributeOptions: [.audioTimeRange])
-            case .parakeet:
-                transcriber = ParakeetTDTTranscriber(
-                    modelURL: modelURL, piecesURL: piecesURL(modelURL), locale: locale)
-            case .cohere:
-                transcriber = CohereTranscriber(
-                    modelURL: modelURL, piecesURL: piecesURL(modelURL), locale: locale)
-            case .granite:
-                // Self-contained: reads granite.json + tokens.json from the asset.
-                transcriber = GraniteTranscriber(
-                    modelURL: modelURL, piecesURL: piecesURL(modelURL), locale: locale)
-            case .canary:
-                if bullets { setenv("VOIXFUL_CANARY_FORMAT", "bullets", 1) }
-                transcriber = CanaryTranscriber(
-                    modelURL: modelURL, piecesURL: piecesURL(modelURL), locale: locale)
-            case .whisper:
-                // Self-contained: reads whisper.json + tokens.txt from the asset.
-                transcriber = WhisperTranscriber(
-                    modelURL: modelURL, piecesURL: piecesURL(modelURL), locale: locale)
-            }
+            transcriber = try BackendRegistry.entry(for: resolved).makeBatch(
+                BatchContext(
+                    modelURL: modelURL, piecesURL: piecesURL(modelURL), locale: locale,
+                    fns: fns, chunkSizeMS: chunk, bullets: bullets))
         } catch {
             throw ValidationError("could not create \(resolved.rawValue) transcriber: \(error)")
         }
@@ -231,33 +207,11 @@ struct Mic: AsyncParsableCommand {
         let piecesURL = modelURL.appendingPathComponent("pieces.txt")
         let transcriber: any Transcribing
         do {
-            switch try ModelBackend.detect(modelURL: modelURL) {
-            case .nemotron:
-                transcriber = try NemotronStreamingTranscriber(
-                    modelURL: modelURL,
-                    locale: locale,
-                    chunkSizeMS: chunk,
-                    mode: .streaming,
-                    reportingOptions: [.volatileResults],
-                    attributeOptions: [],
-                    debug: debug
-                )
-            case .parakeet:
-                transcriber = LiveFullContextTranscriber<ParakeetTDTEngine>(
-                    modelURL: modelURL, piecesURL: piecesURL, locale: locale)
-            case .cohere:
-                transcriber = LiveFullContextTranscriber<CohereTranscribeEngine>(
-                    modelURL: modelURL, piecesURL: piecesURL, locale: locale)
-            case .granite:
-                transcriber = LiveFullContextTranscriber<GraniteNAREngine>(
-                    modelURL: modelURL, piecesURL: piecesURL, locale: locale)
-            case .canary:
-                transcriber = LiveFullContextTranscriber<CanaryQwenEngine>(
-                    modelURL: modelURL, piecesURL: piecesURL, locale: locale)
-            case .whisper:
-                transcriber = LiveFullContextTranscriber<WhisperEngine>(
-                    modelURL: modelURL, piecesURL: piecesURL, locale: locale)
-            }
+            let backend = try ModelBackend.detect(modelURL: modelURL)
+            transcriber = try BackendRegistry.entry(for: backend).makeLive(
+                LiveContext(
+                    modelURL: modelURL, piecesURL: piecesURL, locale: locale,
+                    chunkSizeMS: chunk, debug: debug))
         } catch {
             throw ValidationError("could not create transcriber: \(error)")
         }

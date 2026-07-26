@@ -55,6 +55,10 @@ public actor NemotronStreamingTranscriber: Transcribing {
     private let chunkSize: ChunkSize
     private let mode: ProcessingMode
     private let debug: Bool
+    /// True when the engine was injected pre-loaded (residency). Drives the
+    /// per-utterance streaming reset in `prepare()`, which the injected path
+    /// would otherwise skip via the `engine != nil` early-return.
+    private let engineInjected: Bool
     private let converter = AudioInputConverter()
 
     private var engine: NemotronStreamingEngine?
@@ -110,6 +114,7 @@ public actor NemotronStreamingTranscriber: Transcribing {
         self.chunkSize = chunkSize
         self.mode = mode
         self.debug = debug
+        self.engineInjected = false
         self.reportingOptions = reportingOptions
         self.attributeOptions = attributeOptions
 
@@ -118,10 +123,56 @@ public actor NemotronStreamingTranscriber: Transcribing {
         self.continuation = continuation
     }
 
+    /// Wrap an ALREADY-loaded engine (residency — see `ResidentNemotronModel`).
+    /// The shared engine's weights are reused; `prepare()` skips the model load
+    /// but still runs the cheap per-utterance streaming reset (`engine.start()`).
+    /// Per-utterance buffers are fresh by virtue of being a new instance.
+    package init(
+        engine: NemotronStreamingEngine,
+        locale: Locale = Locale(identifier: "en-US"),
+        chunkSizeMS: Int = 320,
+        mode: ProcessingMode = .streaming,
+        reportingOptions: ReportingOption = [.volatileResults],
+        attributeOptions: ResultAttributeOption = [],
+        debug: Bool = false
+    ) throws {
+        let tag = locale.identifier(.bcp47)
+        guard let language = Language(rawValue: tag) else {
+            throw VoixfulError.unsupportedLocale(tag)
+        }
+        guard let chunkSize = ChunkSize(rawValue: "\(chunkSizeMS)ms") else {
+            throw VoixfulError.engine(
+                "unsupported chunk size \(chunkSizeMS) ms (use 80, 160, 320, 560, 1120)"
+            )
+        }
+
+        self.modelURL = URL(fileURLWithPath: "/dev/null")   // unused: engine is loaded
+        self.language = language
+        self.locale = locale
+        self.chunkSize = chunkSize
+        self.mode = mode
+        self.debug = debug
+        self.engineInjected = true
+        self.reportingOptions = reportingOptions
+        self.attributeOptions = attributeOptions
+
+        let (stream, continuation) = AsyncThrowingStream<TranscriptionResult, Error>.makeStream()
+        self.results = stream
+        self.continuation = continuation
+        self.engine = engine
+    }
+
     // MARK: - VoixfulSpeechModule
 
     public func prepare() async throws {
-        guard engine == nil else { return }
+        if let engine {
+            // Injected shared engine: no load, but streaming needs a fresh
+            // SOS-reset per utterance (cheap vs. a model load).
+            if engineInjected, mode == .streaming {
+                await engine.start()
+            }
+            return
+        }
         do {
             let engine = try await NemotronStreamingEngine(
                 modelURL: modelURL,
