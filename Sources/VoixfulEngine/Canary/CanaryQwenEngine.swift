@@ -63,6 +63,11 @@ public actor CanaryQwenEngine {
     // KV caches, shared by prefill + step within a pass (state tensors).
     private var kCache: NDArray
     private var vCache: NDArray
+    /// Element type of the KV state I/O the loaded decode graph expects —
+    /// `.float16` (fast path, decoder can land on the ANE) or `.float32`
+    /// (legacy assets). Detected once at load; drives cache allocation and the
+    /// prefill-cache copy so old fp32 assets keep working unchanged.
+    private let kvScalarType: NDArray.ScalarType
 
     private static let nMels = 128
     private static let hidden = 2048
@@ -119,11 +124,47 @@ public actor CanaryQwenEngine {
         } catch {
             throw ASRError.modelLoadFailed("specialize(\(modelURL.path)): \(error)")
         }
-        // 28 layers, 8 KV heads, head_dim 128 — [L,1,KV,maxSeq,D] fp32.
-        self.kCache = NDArray(shape: [28, 1, 8, maxSeq, 128], scalarType: .float32)
-        self.vCache = NDArray(shape: [28, 1, 8, maxSeq, 128], scalarType: .float32)
-        self.kCache.zeroFloat32()
-        self.vCache.zeroFloat32()
+        // 28 layers, 8 KV heads, head_dim 128 — [L,1,KV,maxSeq,D]. The element
+        // type is whatever the decode graph's KV state actually declares: fp16
+        // for new assets (fp16 state I/O lets the AR decoder land on the ANE —
+        // the runtime rejects fp32 MemRef states), fp32 for legacy assets. Both
+        // keep working; only the allocation dtype and the prefill-cache copy
+        // (loadPrefillCaches) differ. See CanaryQwenEngine header + models.py.
+        //
+        // Preferred detection is the graph's own state descriptor (authoritative,
+        // works on assets that predate the manifest flag); the canary.json
+        // "kv_dtype" field is a fallback, defaulting to fp32 for old assets.
+        let loadedModel = self.model
+        var graphKV: NDArray.ScalarType? = nil
+        if let desc = loadedModel.functionDescriptor(for: "step_asr"),
+           case .ndArray(let nd)? = desc.stateDescriptor(of: "k_cache") {
+            graphKV = nd.scalarType
+        }
+        self.kvScalarType = Self.kvScalarType(
+            graphDtype: graphKV, manifestKVDtype: m["kv_dtype"] as? String)
+        self.kCache = NDArray(shape: [28, 1, 8, maxSeq, 128], scalarType: self.kvScalarType)
+        self.vCache = NDArray(shape: [28, 1, 8, maxSeq, 128], scalarType: self.kvScalarType)
+        if self.kvScalarType == .float16 {
+            self.kCache.zeroFloat16()
+            self.vCache.zeroFloat16()
+        } else {
+            self.kCache.zeroFloat32()
+            self.vCache.zeroFloat32()
+        }
+    }
+
+    /// Resolve the KV cache element type. Preferred source is the loaded decode
+    /// graph's own state descriptor (`graphDtype`) — authoritative and present
+    /// even on assets converted before any manifest flag. Falls back to the
+    /// `canary.json` "kv_dtype" field, and finally to fp32 (legacy assets that
+    /// declare neither). Anything other than fp16 maps to the fp32 legacy path.
+    /// Pure and deterministic so it can be unit-tested without an asset.
+    static func kvScalarType(
+        graphDtype: NDArray.ScalarType?, manifestKVDtype: String?
+    ) -> NDArray.ScalarType {
+        if let g = graphDtype { return g == .float16 ? .float16 : .float32 }
+        if manifestKVDtype == "float16" { return .float16 }
+        return .float32
     }
 
     private func fn(_ name: String) async throws -> InferenceFunction {
@@ -363,34 +404,51 @@ public actor CanaryQwenEngine {
 
     /// Copy the functional prefill's caches [28, 8, rows, 128] into the
     /// persistent state buffers [28, 1, 8, maxSeq, 128] at rows [0, rows).
+    /// The prefill's k_out/v_out come back in the same element type as the KV
+    /// state (`kvScalarType`) — fp16 for new assets, fp32 for legacy — so the
+    /// element copy is done through the matching pointer type.
     private func loadPrefillCaches(kOut: NDArray, vOut: NDArray, rows: Int) {
+        if kvScalarType == .float16 {
+            copyPrefillCache(Float16.self, kOut, into: &kCache, rows: rows)
+            copyPrefillCache(Float16.self, vOut, into: &vCache, rows: rows)
+        } else {
+            copyPrefillCache(Float.self, kOut, into: &kCache, rows: rows)
+            copyPrefillCache(Float.self, vOut, into: &vCache, rows: rows)
+        }
+    }
+
+    /// Strided element copy of one prefill cache into its persistent buffer,
+    /// generic over the element type so the same logic serves both the fp16 and
+    /// the legacy fp32 KV layouts (`Element` == `Float16` or `Float`).
+    private func copyPrefillCache<Element: BitwiseCopyable>(
+        _: Element.Type, _ src: NDArray, into dst: inout NDArray, rows: Int
+    ) {
         let d = 128, kv = 8, layers = 28
         let maxSeq = self.maxSeq
         // Honor the source view's STRIDES — runtime outputs of this size come
         // back with padded row pitches, so a dense flat copy scrambles rows
-        // (measured: step 1 fine, step 2+ garbage).
-        func copy(_ src: NDArray, into dst: inout NDArray) {
-            src.view(as: Float.self).withUnsafePointer { s, _, strides in
-                let sl = strides[0], sh = strides[1], sr = strides[2], sd = strides[3]
-                var mv = dst.mutableView(as: Float.self)
-                mv.withUnsafeMutablePointer { p, _, _ in
-                    for l in 0..<layers {
-                        for h in 0..<kv {
-                            let dstBase = ((l * kv + h) * maxSeq) * d
-                            if sd == 1, sr == d {
-                                p.advanced(by: dstBase)
-                                    .update(from: s.advanced(by: l * sl + h * sh), count: rows * d)
-                            } else if sd == 1 {
-                                for r in 0..<rows {
-                                    p.advanced(by: dstBase + r * d)
-                                        .update(from: s.advanced(by: l * sl + h * sh + r * sr), count: d)
-                                }
-                            } else {
-                                for r in 0..<rows {
-                                    let srcBase = l * sl + h * sh + r * sr
-                                    for e in 0..<d {
-                                        p[dstBase + r * d + e] = s[srcBase + e * sd]
-                                    }
+        // (measured: step 1 fine, step 2+ garbage). Strides are in ELEMENTS,
+        // so the arithmetic is identical for fp16 and fp32.
+        src.view(as: Element.self).withUnsafePointer { s, _, strides in
+            let sl = strides[0], sh = strides[1], sr = strides[2], sd = strides[3]
+            var mv = dst.mutableView(as: Element.self)
+            mv.withUnsafeMutablePointer { p, _, _ in
+                for l in 0..<layers {
+                    for h in 0..<kv {
+                        let dstBase = ((l * kv + h) * maxSeq) * d
+                        if sd == 1, sr == d {
+                            p.advanced(by: dstBase)
+                                .update(from: s.advanced(by: l * sl + h * sh), count: rows * d)
+                        } else if sd == 1 {
+                            for r in 0..<rows {
+                                p.advanced(by: dstBase + r * d)
+                                    .update(from: s.advanced(by: l * sl + h * sh + r * sr), count: d)
+                            }
+                        } else {
+                            for r in 0..<rows {
+                                let srcBase = l * sl + h * sh + r * sr
+                                for e in 0..<d {
+                                    p[dstBase + r * d + e] = s[srcBase + e * sd]
                                 }
                             }
                         }
@@ -398,8 +456,6 @@ public actor CanaryQwenEngine {
                 }
             }
         }
-        copy(kOut, into: &kCache)
-        copy(vOut, into: &vCache)
     }
 
     /// Drop a leading Qwen3 `<think>...</think>` block (empty under /no_think).

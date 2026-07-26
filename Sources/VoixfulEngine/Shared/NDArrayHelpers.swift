@@ -37,6 +37,16 @@ extension NDArray {
         }
     }
 
+    /// Zero every Float16 element, in place. Used by the Canary-Qwen fp16 KV
+    /// caches (fp16 state I/O lets the AR decoder land on the ANE).
+    mutating func zeroFloat16() {
+        let count = self.elementCount
+        var mv = self.mutableView(as: Float16.self)
+        mv.withUnsafeMutablePointer { ptr, _, _ in
+            ptr.update(repeating: 0, count: count)
+        }
+    }
+
     /// Zero every Int32 element, in place. Mirror of `zeroFloat32` for the
     /// `cache_last_channel_len` int32 counter cache.
     mutating func zeroInt32() {
