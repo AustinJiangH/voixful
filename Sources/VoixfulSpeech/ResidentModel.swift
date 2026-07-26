@@ -59,7 +59,7 @@ public struct OffloadPolicy: Sendable {
 /// *where the transcriber comes from*, nothing about how you transcribe.
 ///
 /// The concrete conformers (`ResidentModelActor`) are `package`; hosts obtain
-/// one via `ResidentModel.load(...)` (in the umbrella `VoixfulKit` module) and
+/// one via `loadResidentModel(...)` (in the umbrella `VoixfulKit` module) and
 /// hold it as `any ResidentModel`.
 public protocol ResidentModel: Actor {
     /// Current lifecycle state.
@@ -80,9 +80,16 @@ public protocol ResidentModel: Actor {
     ///
     /// Single-active: the model vends one live transcriber at a time. Requesting
     /// a new one SUPERSEDES any prior still-live transcriber — it is cancelled
-    /// first (prompt, releasing its pin), so a barge-in / partial→complete
-    /// hand-off is safe even if the caller forgot to cancel the prior job. Two
-    /// concurrent live transcribers on the shared engine are never active.
+    /// (prompt, releasing its pin), so a barge-in / partial→complete hand-off is
+    /// safe even if the caller forgot to cancel the prior job. Two concurrent
+    /// live transcribers on the shared engine are never active.
+    ///
+    /// This holds even for CONCURRENT `transcriber()` calls that interleave
+    /// across the load `await`: the supersede runs at INSTALL time (see the impl),
+    /// so concurrent vends resolve last-writer-wins — the last to install stays
+    /// live and drives the shared engine; every earlier one is cancelled by its
+    /// successor. A vend that "loses" this race returns an already-cancelled
+    /// (finished-stream) transcriber, consistent with barge-in.
     func transcriber(locale: Locale?) async throws -> any Transcribing
 }
 
@@ -214,6 +221,12 @@ package actor ResidentModelActor<Backend: ResidentModelBackend>: ResidentModel {
     private var inUse = 0
     private var pendingOffload = false
     private var idleTimer: Task<Void, Never>?
+    /// Monotonic token stamped each time a fresh idle window is armed (#2). A
+    /// suspended idle timer that already passed its `isCancelled` check carries
+    /// the token of the window it was armed for; `idleFired` offloads only if that
+    /// token still matches, so a stale timer can't offload a generation whose
+    /// fresh idle window started after activity re-armed the timer.
+    private var idleGeneration = 0
     /// The currently-vended transcriber, held WEAKLY so it never keeps the model
     /// pinned (its `deinit`/`cancel` still drives the pin). Used to enforce
     /// single-active: a new `transcriber()` supersedes a prior still-live one by
@@ -285,22 +298,26 @@ package actor ResidentModelActor<Backend: ResidentModelBackend>: ResidentModel {
     public func transcriber(locale: Locale?) async throws -> any Transcribing {
         inUse += 1                              // pin before the first await (#1)
         cancelIdleTimer()
-        // Single-active supersede (#5): two concurrent live transcribers on the
-        // one shared engine are unsafe for streaming (shared cache) and pointless
-        // for dictation, so a new one cancels any prior still-live transcriber.
-        // Snapshot + clear BEFORE any await so re-entrancy can't double-cancel;
-        // the cancel is prompt and releases the prior's pin (idempotent).
-        let prior = activeTranscriber
-        activeTranscriber = nil
         do {
-            if let prior { await prior.cancel() }
             let engine = try await loadedEngine()
             if _state != .ready { setState(.ready) }
+            // Single-active supersede performed atomically at INSTALL time, so it
+            // holds even when two transcriber() calls interleave across the load
+            // await (both would otherwise snapshot `prior == nil` and go live on
+            // the shared engine — corrupting Nemotron's shared streaming cache).
+            // Build our transcriber, swap it in as the active one, THEN cancel
+            // whatever was active before us. make+swap is synchronous (no await
+            // between), so concurrent vends form a total order: the LAST to
+            // install wins and stays live; every earlier one is cancelled by its
+            // successor (prompt, releasing its pin via the once-guard). Net: at
+            // most one live transcriber ever drives the shared engine.
             let inner = backend.makeTranscriber(engine, locale: locale)
             let pinned = PinnedTranscriber(wrapping: inner) { [weak self] in
                 await self?.release()
             }
+            let prior = activeTranscriber
             activeTranscriber = pinned
+            if let prior { await prior.cancel() }
             return pinned
         } catch {
             release()                            // undo the pin on a failed load
@@ -364,6 +381,8 @@ package actor ResidentModelActor<Backend: ResidentModelBackend>: ResidentModel {
     private func startIdleTimer() {
         cancelIdleTimer()
         guard let idle = offload.idle, engine != nil, inUse == 0 else { return }
+        idleGeneration &+= 1                     // stamp this window (#2)
+        let generation = idleGeneration
         idleTimer = Task { [weak self, clock, idle] in
             do {
                 try await Task.sleep(for: idle, tolerance: nil, clock: clock)
@@ -371,12 +390,13 @@ package actor ResidentModelActor<Backend: ResidentModelBackend>: ResidentModel {
                 return                           // cancelled (reset by activity)
             }
             if Task.isCancelled { return }
-            await self?.idleFired()
+            await self?.idleFired(generation: generation)
         }
     }
 
-    private func idleFired() {
-        guard inUse == 0, engine != nil else { return }
+    private func idleFired(generation: Int) {
+        // Ignore a stale fire whose window was superseded by a re-arm (#2).
+        guard generation == idleGeneration, inUse == 0, engine != nil else { return }
         performOffload()
     }
 
@@ -384,6 +404,17 @@ package actor ResidentModelActor<Backend: ResidentModelBackend>: ResidentModel {
         idleTimer?.cancel()
         idleTimer = nil
     }
+
+    // MARK: Test seams (package-visible; not part of the public surface)
+
+    /// Run the exact offload path the OS memory-pressure `DispatchSource` handler
+    /// triggers (offload now if idle, else defer to the last release). Lets the
+    /// pressure policy be tested deterministically without a real OS event.
+    package func simulateMemoryPressure() { offloadOrDefer() }
+
+    /// The current in-use pin count. Used by concurrency tests to confirm N vends
+    /// have all pinned before releasing a gated load (proving load coalescing).
+    package var inUseCount: Int { inUse }
 
     // MARK: State
 

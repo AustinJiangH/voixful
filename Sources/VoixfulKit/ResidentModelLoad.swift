@@ -6,17 +6,20 @@
 // dispatch through `BackendRegistry`.
 
 import Foundation
-import VoixfulSpeech
+// Re-export the resident-model surface so `import VoixfulKit` alone gives a host
+// app everything it needs — `ResidentModel`, `OffloadPolicy`, `SpeechModelState`,
+// and the returned `any Transcribing` — without a second `import VoixfulSpeech`.
+@_exported import VoixfulSpeech
 import VoixfulEngine
 
 /// Load + graph-specialize a model once and keep it warm for reuse across many
 /// dictation utterances (see `ResidentModel`). Warm-on-load by default: when this
-/// returns the model is `.ready`.
+/// returns the model is `.ready`. This free function is the single public entry
+/// point for obtaining a resident model.
 ///
 /// (A top-level function rather than `ResidentModel.load` because Swift can't
-/// call a static member on a protocol metatype; `ResidentModel` is the vended
-/// protocol, so the loader lives beside it as a free function. `ResidentModel`
-/// also carries a `static load` usable on any concrete conformer.)
+/// call a static member on the `ResidentModel` protocol metatype — the type
+/// callers hold — so the loader lives beside it as a free function.)
 ///
 /// - Parameters:
 ///   - model: the `.aimodel` directory.
@@ -38,21 +41,4 @@ public func loadResidentModel(
     let ctx = ResidentContext(
         modelURL: model, piecesURL: pieces, locale: locale, offload: offload)
     return try await BackendRegistry.entry(for: resolved).loadResident(ctx)
-}
-
-extension ResidentModel {
-    /// Same as `loadResidentModel(...)`, callable on a concrete resident type
-    /// (e.g. `ResidentFullContextModel<E>.load(...)`). The bare protocol metatype
-    /// can't carry a static factory, so prefer the free `loadResidentModel(...)`.
-    public static func load(
-        model: URL,
-        locale: Locale = Locale(identifier: "en-US"),
-        backend: ModelBackend? = nil,
-        offload: OffloadPolicy = .default,
-        piecesURL: URL? = nil
-    ) async throws -> any ResidentModel {
-        try await loadResidentModel(
-            model: model, locale: locale, backend: backend,
-            offload: offload, piecesURL: piecesURL)
-    }
 }
