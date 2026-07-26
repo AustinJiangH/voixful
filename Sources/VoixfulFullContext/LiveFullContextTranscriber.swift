@@ -40,6 +40,15 @@ public actor LiveFullContextTranscriber<Engine: FullContextEngine>: Transcribing
     private var utterance: [Float] = []
     private var samplesAtLastRefresh = 0
     private var refreshInFlight = false
+    /// Set by `cancel()`. Once true, `maybeRefresh` starts no NEW pass and the
+    /// results stream is finished — so a cancelled live job promptly frees the
+    /// shared (resident) engine for the superseding job.
+    private var cancelled = false
+    /// The single in-flight detached refresh/commit pass (only one runs at a
+    /// time — `refreshInFlight` gates it). Held so `cancel()` can cancel it,
+    /// which trips `Task.isCancelled` inside the engine's decode loop so even the
+    /// current pass bails early instead of running to completion.
+    private var refreshTask: Task<Void, Never>?
     /// Transcript of audio already COMMITTED and dropped from `utterance`.
     /// Long dictation would otherwise outgrow the engine's largest window
     /// (which silently truncates) and make every refresh pass slower: once
@@ -76,6 +85,39 @@ public actor LiveFullContextTranscriber<Engine: FullContextEngine>: Transcribing
         let (stream, continuation) = AsyncThrowingStream<TranscriptionResult, Error>.makeStream()
         self.results = stream
         self.continuation = continuation
+    }
+
+    /// Wrap an ALREADY-loaded, prewarmed engine (residency — see
+    /// `ResidentFullContextModel`). `prepare()` early-returns on a pre-set engine,
+    /// so this makes the per-utterance transcriber a near no-op to spin up while
+    /// reusing the shared warm model. Per-utterance buffers are fresh by virtue of
+    /// being a new instance. The `piecesURL` is unused here (the engine is loaded)
+    /// but kept in the signature for parity with the `modelURL:` init.
+    package init(
+        engine: Engine,
+        piecesURL: URL,
+        locale: Locale = Locale(identifier: "en-US"),
+        refreshStrideMS: Int = 700,
+        commitThresholdSeconds: Int = 24
+    ) {
+        self.modelURL = piecesURL   // unused: prepare() early-returns on the injected engine
+        self.piecesURL = piecesURL
+        self.moduleIdentifier = "com.voixful.transcriber.\(Engine.identifierSuffix).live"
+        self.modelName = Engine.displayName
+        self.locale = locale
+        self.reportingOptions = [.volatileResults]
+        self.attributeOptions = []
+        self.refreshStride = max(1, refreshStrideMS) * 16
+        // prepare() normally clamps commitThreshold to the engine's window, but it
+        // early-returns on a pre-set engine — so do the clamp here from the
+        // (nonisolated) window instead.
+        let requested = max(8, commitThresholdSeconds) * 16_000
+        let safeWindow = Int(Double(engine.maxAudioSamples) * 0.85)
+        self.commitThreshold = min(requested, safeWindow)
+        let (stream, continuation) = AsyncThrowingStream<TranscriptionResult, Error>.makeStream()
+        self.results = stream
+        self.continuation = continuation
+        self.engine = engine
     }
 
     public func prepare() async throws {
@@ -118,7 +160,7 @@ public actor LiveFullContextTranscriber<Engine: FullContextEngine>: Transcribing
     /// quietest gap, freeze that text, drop those samples. Detached so the
     /// mic feed is never blocked.
     private func maybeRefresh() {
-        guard let engine, !refreshInFlight,
+        guard !cancelled, let engine, !refreshInFlight,
               utterance.count - samplesAtLastRefresh >= refreshStride else { return }
         if !producedFirstResult {
             continuation.yield(TranscriptionResult(
@@ -133,7 +175,7 @@ public actor LiveFullContextTranscriber<Engine: FullContextEngine>: Transcribing
             let splitAt = LongForm.quietestSplit(
                 utterance, from: commitThreshold / 2, to: commitThreshold)
             let head = Array(utterance[..<splitAt])
-            Task {
+            refreshTask = Task {
                 do {
                     // LongForm keeps the head safe even if it ever exceeds the
                     // window; on a transcribe error we must NOT drop the samples.
@@ -148,7 +190,7 @@ public actor LiveFullContextTranscriber<Engine: FullContextEngine>: Transcribing
 
         let snapshot = utterance
         let prefix = committedText
-        Task { [continuation] in
+        refreshTask = Task { [continuation] in
             if let transcript = try? await engine.transcribe(audio: snapshot) {
                 let joined = prefix.isEmpty
                     ? transcript.text
@@ -219,7 +261,17 @@ public actor LiveFullContextTranscriber<Engine: FullContextEngine>: Transcribing
         }
     }
 
+    /// Prompt, cooperative cancel. Sets the stop flag so no NEW refresh pass is
+    /// started, cancels the single in-flight detached pass (which trips
+    /// `Task.isCancelled` in the engine's decode loop so even that pass bails
+    /// early), and finishes the results stream — WITHOUT awaiting the in-flight
+    /// pass. So the shared (resident) engine is freed for the next job with at
+    /// most one already-dispatched Core AI call left to drain; no final result is
+    /// emitted for the cancelled job.
     public func cancel() async {
+        cancelled = true
+        refreshTask?.cancel()
+        refreshTask = nil
         continuation.finish()
     }
 }

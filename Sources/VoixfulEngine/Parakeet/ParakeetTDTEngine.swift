@@ -291,6 +291,10 @@ public actor ParakeetTDTEngine {
         encProj.view(as: Float.self).withUnsafePointer { base, _, strides in
             var t = 0
             while t < frames {
+                // Cooperative cancel: this loop is pure-CPU and fast, but a
+                // superseded pass over a 30 s window still shouldn't run to the
+                // end — bail out and throw below.
+                if Task.isCancelled { break }
                 var symbols = 0
                 while true {
                     let (tok, skip) = cpu.join(encProjT: base.advanced(by: t * strides[1]))
@@ -304,6 +308,7 @@ public actor ParakeetTDTEngine {
                 }
             }
         }
+        try Task.checkCancellation()   // surface a cancel that broke the loop above
         return emitted
     }
 
@@ -338,6 +343,10 @@ public actor ParakeetTDTEngine {
 
         var t = 0
         while t < frames {
+            // Cooperative cancel: bail between frames (each frame is ≥1 Core AI
+            // dispatch) so a superseded live pass frees the shared engine
+            // promptly instead of decoding the whole clip.
+            try Task.checkCancellation()
             encProj.view(as: Float.self).withUnsafePointer { src, _, strides in
                 let off = t * strides[1]
                 var dv = encProjT.mutableView(as: Float.self)
@@ -393,6 +402,10 @@ public actor ParakeetTDTEngine {
 
         var t = 0
         while t < frames {
+            // Cooperative cancel: bail between frames (each frame is ≥1 Core AI
+            // dispatch) so a superseded live pass frees the shared engine
+            // promptly instead of decoding the whole clip.
+            try Task.checkCancellation()
             // Copy enc_out[:, t, :] into the scratch step.
             encOut.view(as: Float.self).withUnsafePointer { src, _, strides in
                 let off = t * strides[1]
