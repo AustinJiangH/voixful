@@ -119,11 +119,14 @@ public actor CanaryQwenEngine {
         } catch {
             throw ASRError.modelLoadFailed("specialize(\(modelURL.path)): \(error)")
         }
-        // 28 layers, 8 KV heads, head_dim 128 — [L,1,KV,maxSeq,D] fp32.
-        self.kCache = NDArray(shape: [28, 1, 8, maxSeq, 128], scalarType: .float32)
-        self.vCache = NDArray(shape: [28, 1, 8, maxSeq, 128], scalarType: .float32)
-        self.kCache.zeroFloat32()
-        self.vCache.zeroFloat32()
+        // 28 layers, 8 KV heads, head_dim 128 — [L,1,KV,maxSeq,D] fp16.
+        // fp16 STORAGE (not just compute): the step/prefill graphs declare fp16
+        // KV state I/O so the AR decoder can land on the ANE (which rejects
+        // fp32 MemRef states). See CanaryQwenEngine header + models.py.
+        self.kCache = NDArray(shape: [28, 1, 8, maxSeq, 128], scalarType: .float16)
+        self.vCache = NDArray(shape: [28, 1, 8, maxSeq, 128], scalarType: .float16)
+        self.kCache.zeroFloat16()
+        self.vCache.zeroFloat16()
     }
 
     private func fn(_ name: String) async throws -> InferenceFunction {
@@ -363,6 +366,7 @@ public actor CanaryQwenEngine {
 
     /// Copy the functional prefill's caches [28, 8, rows, 128] into the
     /// persistent state buffers [28, 1, 8, maxSeq, 128] at rows [0, rows).
+    /// Both are fp16 (matching the fp16 KV state I/O of the decode graphs).
     private func loadPrefillCaches(kOut: NDArray, vOut: NDArray, rows: Int) {
         let d = 128, kv = 8, layers = 28
         let maxSeq = self.maxSeq
@@ -370,9 +374,9 @@ public actor CanaryQwenEngine {
         // back with padded row pitches, so a dense flat copy scrambles rows
         // (measured: step 1 fine, step 2+ garbage).
         func copy(_ src: NDArray, into dst: inout NDArray) {
-            src.view(as: Float.self).withUnsafePointer { s, _, strides in
+            src.view(as: Float16.self).withUnsafePointer { s, _, strides in
                 let sl = strides[0], sh = strides[1], sr = strides[2], sd = strides[3]
-                var mv = dst.mutableView(as: Float.self)
+                var mv = dst.mutableView(as: Float16.self)
                 mv.withUnsafeMutablePointer { p, _, _ in
                     for l in 0..<layers {
                         for h in 0..<kv {

@@ -125,8 +125,13 @@ class QwenStepForCoreAI(nn.Module):
         self.embed = hf_model.model.embed_tokens
         c = self.core
         shape = (c.n_layers, 1, c.n_kv, MAX_SEQ, c.head_dim)
-        self.register_buffer("k_cache", torch.zeros(shape))
-        self.register_buffer("v_cache", torch.zeros(shape))
+        # KV cache STORAGE is fp16 (state I/O boundary); compute stays fp32.
+        # ANE requires fp16 MemRef states — the runtime's only sanctioned state
+        # I/O cast is "F16 MemRef <-> F32 Tensor", so a fp32 cache state forces
+        # a GPU fallback. Storing fp16 and up/down-casting inside the graph puts
+        # exactly that blessed cast on the boundary. See models.py fp16 notes.
+        self.register_buffer("k_cache", torch.zeros(shape, dtype=torch.float16))
+        self.register_buffer("v_cache", torch.zeros(shape, dtype=torch.float16))
         self.register_buffer("arangeS", torch.arange(MAX_SEQ, dtype=torch.int32))
 
     def forward(self, tok: torch.Tensor, pos: torch.Tensor) -> torch.Tensor:
@@ -144,11 +149,15 @@ class QwenStepForCoreAI(nn.Module):
         for li, layer in enumerate(c.model.layers):
             h = _rms_norm(x, layer.input_layernorm.weight, c.eps)
             q, k, v = c.attn_qkv(layer, h, cos, sin)       # q/k/v: [1,·,1,D]
+            # Read fp16 state -> fp32 (the ANE-blessed "F16 MemRef -> F32 Tensor"
+            # cast), do the one-hot write in fp32, store fp32 -> fp16 state.
             # Broadcast one-hot write at row `pos` (no scatter, no .repeat()):
             # k*onehot is [1,KV,MAX,D] with k's row at pos, zeros elsewhere.
-            self.k_cache[li] = self.k_cache[li] * (1 - onehot[0]) + (k * onehot)[0]
-            self.v_cache[li] = self.v_cache[li] * (1 - onehot[0]) + (v * onehot)[0]
-            att = c.attend(layer, q, self.k_cache[li], self.v_cache[li], keymask)
+            kf = self.k_cache[li].float() * (1 - onehot[0]) + (k * onehot)[0]
+            vf = self.v_cache[li].float() * (1 - onehot[0]) + (v * onehot)[0]
+            self.k_cache[li] = kf.to(torch.float16)
+            self.v_cache[li] = vf.to(torch.float16)
+            att = c.attend(layer, q, kf, vf, keymask)
             x = x + att
             h = _rms_norm(x, layer.post_attention_layernorm.weight, c.eps)
             x = x + c.mlp(layer, h)
@@ -210,8 +219,9 @@ class QwenPrefillForCoreAI(QwenPrefillCore):
         onehot = (torch.arange(L, dtype=torch.int32) == last_idx.reshape(1)).to(x.dtype)
         last = torch.matmul(onehot.view(1, 1, L), x).squeeze(1)
         tok = torch.argmax(c.lm_head(last), dim=-1).to(torch.int32)
-        k_out = torch.cat(new_k, dim=0)   # [28,KV,L,D]
-        v_out = torch.cat(new_v, dim=0)
+        # fp16 outputs: the host loads these into the fp16 step KV state.
+        k_out = torch.cat(new_k, dim=0).to(torch.float16)   # [28,KV,L,D]
+        v_out = torch.cat(new_v, dim=0).to(torch.float16)
         return tok, k_out, v_out
 
 
