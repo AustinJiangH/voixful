@@ -154,8 +154,11 @@ private actor SlowCancellableMock: FullContextEngine {
 
     func transcribe(audio: [Float]) async throws -> Transcript {
         slowControl.enter()
-        // Bounded spin so a wedged test can't hang forever (~4 s cap).
-        for _ in 0..<2000 {
+        // Block indefinitely until the gate opens (complete) or the Task is
+        // cancelled (bail) — no wall-clock cap. XCTest's own timeout is the hang
+        // guard; a bounded spin uncoordinated with the test's real-time polling
+        // would be a latent CI flake.
+        while true {
             if Task.isCancelled { slowControl.exitBailed(); throw CancellationError() }
             if slowControl.isOpen {
                 slowControl.exitCompleted()
@@ -163,9 +166,80 @@ private actor SlowCancellableMock: FullContextEngine {
             }
             try? await Task.sleep(for: .milliseconds(2))
         }
-        slowControl.exitCompleted()
-        return Transcript(text: "complete transcript", segments: [], language: nil)
     }
+}
+
+// MARK: - Gated mock engine (blocks load until the test releases it)
+
+/// Gate for `GatedMock`: `load()` blocks until `release()` so N concurrent
+/// `transcriber()` calls all pile onto the single memoized load — a non-memoized
+/// impl would instead run `init` N times.
+private final class LoadGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _released = false
+    var isReleased: Bool { lock.lock(); defer { lock.unlock() }; return _released }
+    func release() { lock.lock(); _released = true; lock.unlock() }
+    func reset() { lock.lock(); _released = false; lock.unlock() }
+}
+private let loadGate = LoadGate()
+
+private actor GatedMock: FullContextEngine {
+    static let displayName = "GatedMock"
+    static let identifierSuffix = "gatedmock"
+    static var supportedLocales: [Locale] { [Locale(identifier: "en-US")] }
+    nonisolated let maxAudioSamples = 16_000
+
+    init(modelURL: URL, piecesURL: URL) async throws {
+        initCounter.bump()
+        while !loadGate.isReleased { try? await Task.sleep(for: .milliseconds(2)) }
+    }
+    func prewarm() {}
+    func transcribe(audio: [Float]) async throws -> Transcript {
+        Transcript(text: "", segments: [], language: nil)
+    }
+}
+
+// MARK: - Throwing mock engine (fails the first N loads, then succeeds)
+
+/// Controls how many `GatedMock`-free `ThrowingMock` loads throw before one
+/// succeeds — to exercise the load-failure retry / no-pin-leak path.
+private final class ThrowControl: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _attempts = 0
+    private var _failFirst = 0
+    func setFailures(_ n: Int) { lock.lock(); _failFirst = n; _attempts = 0; lock.unlock() }
+    /// Called once per load attempt; true while the attempt should throw.
+    func shouldThrow() -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        _attempts += 1
+        return _attempts <= _failFirst
+    }
+}
+private let throwControl = ThrowControl()
+
+private actor ThrowingMock: FullContextEngine {
+    static let displayName = "ThrowMock"
+    static let identifierSuffix = "throwmock"
+    static var supportedLocales: [Locale] { [Locale(identifier: "en-US")] }
+    nonisolated let maxAudioSamples = 16_000
+
+    init(modelURL: URL, piecesURL: URL) async throws {
+        initCounter.bump()
+        if throwControl.shouldThrow() { throw VoixfulError.engine("simulated load failure") }
+    }
+    func prewarm() {}
+    func transcribe(audio: [Float]) async throws -> Transcript {
+        Transcript(text: "", segments: [], language: nil)
+    }
+}
+
+// MARK: - Thread-safe recorder for the states stream
+
+private final class StatesRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _states: [SpeechModelState] = []
+    func append(_ s: SpeechModelState) { lock.lock(); _states.append(s); lock.unlock() }
+    var snapshot: [SpeechModelState] { lock.lock(); defer { lock.unlock() }; return _states }
 }
 
 final class ResidentModelTests: XCTestCase {
@@ -265,7 +339,10 @@ final class ResidentModelTests: XCTestCase {
         await awaitState(model, .offloaded)
     }
 
-    // (d) forced unload() while a transcriber is outstanding is deferred.
+    // (d) forced unload() while a transcriber is outstanding is deferred — and
+    // the engine stays genuinely usable under the deferral (not just the label):
+    // we drive the transcriber to a real final result before the deferred offload
+    // fires on its last release.
     func testUnloadDefersWhileTranscriberOutstanding() async throws {
         initCounter.reset()
         let model = makeModel(offload: .pinned)
@@ -275,24 +352,40 @@ final class ResidentModelTests: XCTestCase {
         await model.unload()                          // in-use > 0 → deferred
         do { let s = await model.state; XCTAssertEqual(s, .ready, "must not offload under a live transcriber") }
 
+        // Prove the shared engine still works while the unload is deferred.
+        try await t.prepare()
+        try await t.consume(makeInput(frames: 4_000))
+        let collector = collectResults(t)
         try await t.finalize()                        // last release → the deferred offload fires
+        let results = await collector.value
+        XCTAssertTrue(results.contains { $0.isFinal }, "engine must stay usable under a deferred unload")
         await awaitState(model, .offloaded)
     }
 
-    // (e) concurrent reloads coalesce into one specialize+load.
+    // (e) concurrent reloads coalesce into one specialize+load. Deterministic:
+    // GatedMock.load() blocks until every vend has pinned (all N piled onto the
+    // one memoized loadTask), THEN the gate opens — so a non-memoized impl would
+    // yield init == N, and coalescing shows init == 1. We do NOT hold N live
+    // transcribers (that would violate single-active); the vends are discarded.
     func testConcurrentReloadsCoalesce() async throws {
-        initCounter.reset()
-        let model = makeModel(offload: .pinned)       // starts offloaded (no warmUp)
-        let held = try await withThrowingTaskGroup(of: (any Transcribing).self) { group -> [any Transcribing] in
-            for _ in 0..<8 {
-                group.addTask { try await model.transcriber(locale: nil) }
+        initCounter.reset(); loadGate.reset()
+        let model = ResidentFullContextModel<GatedMock>(
+            modelURL: nul, piecesURL: nul, offload: .pinned, clock: ContinuousClock())
+        let n = 8
+        let group = Task {
+            try await withThrowingTaskGroup(of: Void.self) { g in
+                for _ in 0..<n { g.addTask { _ = try await model.transcriber(locale: nil) } }
+                try await g.waitForAll()
             }
-            var out: [any Transcribing] = []
-            for try await t in group { out.append(t) }
-            return out
         }
-        XCTAssertEqual(initCounter.count, 1, "8 concurrent loads should coalesce to one")
-        withExtendedLifetime(held) {}
+        // Wait until all n vends have pinned — i.e. all are awaiting the single
+        // in-flight (gated) load. Only then release, so the coalescing path is
+        // the one exercised.
+        await pollAsync { await model.inUseCount == n }
+        do { let c = await model.inUseCount; XCTAssertEqual(c, n, "all \(n) vends should pin before the load resolves") }
+        loadGate.release()
+        try await group.value
+        XCTAssertEqual(initCounter.count, 1, "\(n) concurrent loads should coalesce to one")
     }
 
     // (f) the vended transcriber releases its pin on finalize/cancel AND via deinit.
@@ -347,8 +440,11 @@ final class ResidentModelTests: XCTestCase {
         await model.warmUp()
         let seen = await collector.value
         do { let s = await model.state; XCTAssertEqual(s, .ready) }
-        XCTAssertTrue(seen.contains(.loading), "should pass through .loading")
-        XCTAssertTrue(seen.contains(.warming), "should pass through .warming")
+        let iLoading = seen.firstIndex(of: .loading)
+        let iWarming = seen.firstIndex(of: .warming)
+        XCTAssertNotNil(iLoading, "should pass through .loading")
+        XCTAssertNotNil(iWarming, "should pass through .warming")
+        XCTAssertLessThan(iLoading!, iWarming!, ".loading must precede .warming")
         XCTAssertEqual(seen.last, .ready)
     }
 
@@ -388,6 +484,16 @@ final class ResidentModelTests: XCTestCase {
         let deadline = clock.now.advanced(by: timeout)
         while clock.now < deadline {
             if until() { return }
+            try? await Task.sleep(for: .milliseconds(3))
+        }
+    }
+
+    /// `poll` for an async predicate (e.g. reading an actor's state).
+    private func pollAsync(_ timeout: Duration = .seconds(5), until: () async -> Bool) async {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: timeout)
+        while clock.now < deadline {
+            if await until() { return }
             try? await Task.sleep(for: .milliseconds(3))
         }
     }
@@ -479,5 +585,184 @@ final class ResidentModelTests: XCTestCase {
         await t2.cancel()                         // release t2's pin so unload can fire
         await model.unload()
         await awaitState(model, .offloaded)
+    }
+
+    // Single-active under CONCURRENT vends (proves the fix for finding #1): two
+    // transcriber() calls that interleave across the load await must NOT both go
+    // live on the shared engine. After both vends return, the loser is already
+    // cancelled (the last installer awaited the prior's cancel), so driving BOTH
+    // yields at most ONE engine pass in flight. No pin leaks (unload → offloaded).
+    func testConcurrentVendsAreSingleActive() async throws {
+        initCounter.reset(); slowControl.reset()
+        let model = makeSlowModel()                // starts offloaded → both race the load
+
+        async let aVend = model.transcriber(locale: nil)
+        async let bVend = model.transcriber(locale: nil)
+        let ta = try await aVend
+        let tb = try await bVend
+
+        try await ta.prepare(); try await tb.prepare()
+        let ca = collectResults(ta); let cb = collectResults(tb)
+        // Drive both. The cancelled (superseded) one gates maybeRefresh on its
+        // `cancelled` flag, so it starts no pass — only the live one dispatches.
+        try await ta.consume(makeInput(frames: 12_000))
+        try await tb.consume(makeInput(frames: 12_000))
+        await poll { slowControl.inFlight >= 1 }
+        XCTAssertEqual(slowControl.inFlight, 1,
+                       "at most one transcriber may ever drive the shared engine")
+        XCTAssertEqual(initCounter.count, 1, "coalesced load — one generation only")
+
+        await ta.cancel(); await tb.cancel()      // live pass bails; both pins released
+        _ = await ca.value; _ = await cb.value
+        await model.unload()
+        await awaitState(model, .offloaded)
+    }
+
+    // Load THROWS → retry + no pin leak (finding #7). First load throws; the vend
+    // rethrows and leaves the model .offloaded with its pin released (loadTask
+    // cleared). A subsequent vend succeeds (proving retry), and a final unload
+    // offloads (proving the failed load leaked no pin — no deadlock).
+    func testLoadThrowsThenRetriesWithoutPinLeak() async throws {
+        initCounter.reset(); throwControl.setFailures(1)
+        let model = ResidentFullContextModel<ThrowingMock>(
+            modelURL: nul, piecesURL: nul, offload: .pinned, clock: ContinuousClock())
+
+        do {
+            _ = try await model.transcriber(locale: nil)
+            XCTFail("first vend should throw when the load fails")
+        } catch { /* expected */ }
+        do { let s = await model.state; XCTAssertEqual(s, .offloaded, "failed load resets to .offloaded") }
+        do { let n = await model.inUseCount; XCTAssertEqual(n, 0, "failed load must release its pin") }
+
+        // Retry: loadTask was cleared, so this reloads and succeeds.
+        let t = try await model.transcriber(locale: nil)
+        do { let s = await model.state; XCTAssertEqual(s, .ready) }
+        XCTAssertEqual(initCounter.count, 2, "one failed load + one successful load")
+        try await t.finalize()
+
+        await model.unload()                      // no leaked pin / deadlock
+        await awaitState(model, .offloaded)
+    }
+
+    // Memory-pressure offload (finding #7): pressure with a live transcriber
+    // DEFERS (ARC would reclaim nothing); pressure with none offloads immediately.
+    // simulateMemoryPressure() runs the same offloadOrDefer path as the OS handler.
+    func testMemoryPressureDefersUnderLiveTranscriberElseOffloads() async throws {
+        initCounter.reset()
+        let model = makeModel(offload: .pinned)   // .pinned: no idle timer to interfere
+
+        // (1) Live transcriber → pressure defers.
+        await model.warmUp()
+        let t = try await model.transcriber(locale: nil)
+        await model.simulateMemoryPressure()
+        do { let s = await model.state; XCTAssertEqual(s, .ready, "pressure must defer under a live transcriber") }
+        try await t.finalize()                    // last release → the deferred offload fires
+        await awaitState(model, .offloaded)
+
+        // (2) No live transcriber → pressure offloads immediately.
+        await model.warmUp()
+        do { let s = await model.state; XCTAssertEqual(s, .ready) }
+        await model.simulateMemoryPressure()
+        await awaitState(model, .offloaded)
+    }
+
+    // Transparent reload skips re-specialization (finding #7): across an idle
+    // offload → reload via transcriber(), the states stream emits .loading →
+    // .ready and NOT .warming (reload repays only weight materialization, not the
+    // multi-second graph specialization — persistent Core AI cache). Locks the
+    // contract.
+    func testTransparentReloadSkipsWarming() async throws {
+        initCounter.reset()
+        let clock = ManualClock()
+        let model = makeModel(
+            offload: OffloadPolicy(idle: .seconds(100), onMemoryPressure: false), clock: clock)
+        let recorder = StatesRecorder()
+        let stream = model.states
+        let collector = Task { for await s in stream { recorder.append(s) } }
+        defer { collector.cancel() }
+
+        await model.warmUp()                      // .loading → .warming → .ready
+        await awaitState(model, .ready)
+        await waitForTimer(clock)
+        clock.advance(by: .seconds(101))          // idle → .offloaded
+        await awaitState(model, .offloaded)
+
+        let t = try await model.transcriber(locale: nil)   // transparent reload
+        await awaitState(model, .ready)
+        await poll { recorder.snapshot.last == .ready }
+
+        let seen = recorder.snapshot
+        guard let lastOffload = seen.lastIndex(of: .offloaded) else {
+            return XCTFail("model should have idle-offloaded before the reload")
+        }
+        let reloadTail = Array(seen[(lastOffload + 1)...])
+        XCTAssertEqual(reloadTail, [.loading, .ready], "reload is .loading → .ready")
+        XCTAssertFalse(reloadTail.contains(.warming), "transparent reload must skip re-specialization")
+        withExtendedLifetime(t) {}
+    }
+
+    // Double-cancel / cancel-after-finalize idempotence (finding #7): the terminal
+    // release fires exactly once across finalize() then cancel() (and cancel()
+    // twice); inUse never underflows, and the lifecycle stays intact afterward.
+    func testTerminalReleaseIsIdempotent() async throws {
+        initCounter.reset()
+        let model = makeModel(offload: .pinned)
+        await model.warmUp()
+        let t = try await model.transcriber(locale: nil)
+
+        try await t.finalize()                    // releases the pin (once)
+        await t.cancel()                          // once-guard: no second release
+        await t.cancel()                          // still no-op
+        do { let n = await model.inUseCount; XCTAssertEqual(n, 0, "inUse must not underflow past zero") }
+
+        await model.unload()
+        await awaitState(model, .offloaded)
+
+        // Engine lifecycle is intact: a fresh vend still works.
+        let t2 = try await model.transcriber(locale: nil)
+        do { let s = await model.state; XCTAssertEqual(s, .ready) }
+        await t2.cancel()
+        await model.unload()
+        await awaitState(model, .offloaded)
+    }
+
+    // .pinned never idle-offloads (finding #7): under .pinned (idle == nil) no idle
+    // timer is ever armed, so advancing the clock far past any window keeps .ready.
+    func testPinnedNeverIdleOffloads() async throws {
+        initCounter.reset()
+        let clock = ManualClock()
+        let model = makeModel(offload: .pinned, clock: clock)   // idle == nil
+        await model.warmUp()
+        do { let s = await model.state; XCTAssertEqual(s, .ready) }
+        XCTAssertEqual(clock.liveSleepers, 0, ".pinned must not arm an idle timer")
+
+        clock.advance(by: .seconds(100_000))      // well past any plausible idle window
+        try? await Task.sleep(for: .milliseconds(20))   // give any errant idle task a chance
+        do { let s = await model.state; XCTAssertEqual(s, .ready, ".pinned must never idle-offload") }
+        XCTAssertEqual(initCounter.count, 1, "no reload — the model stayed resident")
+    }
+
+    // Nemotron residency + per-utterance streaming reset.
+    //
+    // The contract (design §Cancellation.4): a vended Nemotron transcriber's
+    // prepare() must run engine.start() (SOS reset) so utterance #2 can't inherit
+    // #1's shared streaming cache. That branch lives in
+    // `NemotronStreamingTranscriber.prepare()` (engineInjected && mode==.streaming
+    // → await engine.start()) and is exercised end-to-end by the Nemotron mic path.
+    //
+    // A DETERMINISTIC unit test of it is not feasible here: NemotronStreamingEngine
+    // is a concrete `public actor` whose init loads a real .aimodel (four Core AI
+    // sessions), and NemotronStreamingTranscriber holds it as a concrete type with
+    // no protocol seam — so no mock engine can be injected without an engine-layer
+    // refactor the design explicitly avoids. The generic single-active/supersede
+    // machinery that drives the reset (one transcriber per vend, prior cancelled)
+    // is covered by the FullContext supersede tests above; the reset itself is a
+    // three-line branch verified by inspection. Skipped, not silently omitted.
+    func testNemotronPerUtteranceStreamingReset() throws {
+        throw XCTSkip("""
+            Requires a real Nemotron .aimodel or an engine protocol seam; \
+            NemotronStreamingEngine has no injectable mock. Reset branch is \
+            covered by inspection + the Nemotron mic path (see NemotronStreamingTranscriber.prepare()).
+            """)
     }
 }
