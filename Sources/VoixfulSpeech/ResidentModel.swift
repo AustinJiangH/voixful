@@ -153,8 +153,24 @@ package final class PinnedTranscriber<Inner: Transcribing>: Transcribing, @unche
         self.onRelease = onRelease
     }
 
-    public func prepare() async throws { try await inner.prepare() }
-    public func consume(_ input: AnalyzerInput) async throws { try await inner.consume(input) }
+    // Once terminal (finalize/cancel/deinit claimed the release), this transcriber
+    // is inert toward the engine: prepare()/consume() no-op. This is what makes a
+    // SUPERSEDED transcriber (the resident cancels the prior when a new one is
+    // vended) unable to drive the shared engine — defense-in-depth on top of each
+    // backend transcriber's own cancellation gate.
+    public func prepare() async throws {
+        guard !isTerminated else { return }
+        try await inner.prepare()
+    }
+    public func consume(_ input: AnalyzerInput) async throws {
+        guard !isTerminated else { return }
+        try await inner.consume(input)
+    }
+
+    private var isTerminated: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return releaseClaimed
+    }
 
     public func finalize() async throws {
         do {

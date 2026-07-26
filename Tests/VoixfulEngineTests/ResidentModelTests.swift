@@ -765,4 +765,59 @@ final class ResidentModelTests: XCTestCase {
             covered by inspection + the Nemotron mic path (see NemotronStreamingTranscriber.prepare()).
             """)
     }
+
+    // A superseded transcriber (the resident cancels the prior when a new one is
+    // vended) must be INERT toward the engine — never `prepare()`/`consume()`
+    // after cancel — or a still-driven loser could feed the shared streaming
+    // cache while the winner resets it. PinnedTranscriber enforces this
+    // generically (backend-agnostic); NemotronStreamingTranscriber enforces it
+    // again at the engine boundary. This proves the generic gate deterministically.
+    func testCancelledPinnedTranscriberTouchesNoEngine() async throws {
+        let recorder = RecordingTranscriber()
+        let pinned = PinnedTranscriber(wrapping: recorder, onRelease: {})
+        let input = AnalyzerInput(
+            buffer: AVAudioPCMBuffer(
+                pcmFormat: AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16_000,
+                                        channels: 1, interleaved: false)!,
+                frameCapacity: 16)!)
+
+        // Before cancel: forwards to the inner transcriber.
+        try await pinned.prepare()
+        try await pinned.consume(input)
+        var p = await recorder.prepareCount, c = await recorder.consumeCount
+        XCTAssertEqual(p, 1); XCTAssertEqual(c, 1)
+
+        // Supersede: the resident cancels this transcriber.
+        await pinned.cancel()
+
+        // Any further driving by a forgetful caller must reach NO engine work.
+        try await pinned.prepare()
+        try await pinned.consume(input)
+        try await pinned.consume(input)
+        p = await recorder.prepareCount; c = await recorder.consumeCount
+        XCTAssertEqual(p, 1, "cancelled transcriber must not prepare() the engine again")
+        XCTAssertEqual(c, 1, "cancelled transcriber must not consume() into the engine")
+    }
+}
+
+/// Minimal `Transcribing` that just counts `prepare()`/`consume()` — for proving
+/// PinnedTranscriber's post-cancel inertness without a real engine.
+private actor RecordingTranscriber: Transcribing {
+    nonisolated let moduleIdentifier = "mock.recording"
+    nonisolated let modelName = "Recording"
+    nonisolated let locale = Locale(identifier: "en-US")
+    nonisolated let reportingOptions: ReportingOption = []
+    nonisolated let attributeOptions: ResultAttributeOption = []
+    nonisolated let results: AsyncThrowingStream<TranscriptionResult, Error>
+    private let continuation: AsyncThrowingStream<TranscriptionResult, Error>.Continuation
+    static var supportedLocales: [Locale] { [Locale(identifier: "en-US")] }
+
+    private(set) var prepareCount = 0
+    private(set) var consumeCount = 0
+
+    init() { (results, continuation) = AsyncThrowingStream.makeStream() }
+    func prepare() async throws { prepareCount += 1 }
+    func consume(_ input: AnalyzerInput) async throws { consumeCount += 1 }
+    func finalize() async throws { continuation.finish() }
+    func cancel() async { continuation.finish() }
 }

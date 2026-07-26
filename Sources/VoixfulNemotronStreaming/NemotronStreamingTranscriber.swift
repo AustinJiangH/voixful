@@ -62,6 +62,12 @@ public actor NemotronStreamingTranscriber: Transcribing {
     private let converter = AudioInputConverter()
 
     private var engine: NemotronStreamingEngine?
+    /// Once cancelled, `prepare()`/`consume()` become no-ops toward the shared
+    /// engine. Actor isolation makes this gate atomic with `cancel()`, so a
+    /// superseded transcriber (a resident model cancels the prior when a new one
+    /// is vended) can never `start()`/`feed()` into the winner's streaming cache.
+    /// Mirrors `LiveFullContextTranscriber`'s cancellation gate.
+    private var cancelled = false
     private var utterance: [Float] = []   // batch mode only
     private var pendingStream: [Float] = []   // streaming mode — batched before feed()
     private var samplesSeen = 0           // both modes — drives the time range
@@ -165,6 +171,7 @@ public actor NemotronStreamingTranscriber: Transcribing {
     // MARK: - VoixfulSpeechModule
 
     public func prepare() async throws {
+        guard !cancelled else { return }   // superseded/cancelled: touch no engine
         if let engine {
             // Injected shared engine: no load, but streaming needs a fresh
             // SOS-reset per utterance (cheap vs. a model load).
@@ -192,6 +199,7 @@ public actor NemotronStreamingTranscriber: Transcribing {
     }
 
     public func consume(_ input: AnalyzerInput) async throws {
+        guard !cancelled else { return }   // superseded/cancelled: touch no engine
         let samples = try converter.convert(input.buffer)
         if utteranceStart == nil {
             utteranceStart = input.bufferStartTime?.seconds ?? 0
@@ -257,6 +265,7 @@ public actor NemotronStreamingTranscriber: Transcribing {
     }
 
     public func cancel() async {
+        cancelled = true                   // gate any further prepare()/consume()
         continuation.finish()
     }
 
