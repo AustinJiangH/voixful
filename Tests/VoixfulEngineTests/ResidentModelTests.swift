@@ -8,6 +8,7 @@
 // the test says so — no wall-clock flakiness.
 
 import XCTest
+import AVFoundation
 import VoixfulEngine
 import VoixfulFullContext
 import VoixfulKit
@@ -102,6 +103,71 @@ private actor CountingMock: FullContextEngine {
     }
 }
 
+// MARK: - Slow, cancellable mock engine
+
+/// Shared control/observation for `SlowCancellableMock`, so a test can watch a
+/// pass go in-flight, open a gate to let it complete, and confirm whether the
+/// pass BAILED on cancellation (promptness) or ran to completion. Poll-based
+/// like `InitCounter` to avoid cross-actor plumbing.
+private final class SlowMockControl: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _inFlight = 0
+    private var _bailed = 0
+    private var _completed = 0
+    private var _open = false
+
+    var inFlight: Int { lock.lock(); defer { lock.unlock() }; return _inFlight }
+    var bailed: Int { lock.lock(); defer { lock.unlock() }; return _bailed }
+    var completed: Int { lock.lock(); defer { lock.unlock() }; return _completed }
+    var isOpen: Bool { lock.lock(); defer { lock.unlock() }; return _open }
+
+    /// Let any in-flight (and future) pass complete instead of blocking.
+    func open() { lock.lock(); _open = true; lock.unlock() }
+    func enter() { lock.lock(); _inFlight += 1; lock.unlock() }
+    func exitBailed() { lock.lock(); _inFlight -= 1; _bailed += 1; lock.unlock() }
+    func exitCompleted() { lock.lock(); _inFlight -= 1; _completed += 1; lock.unlock() }
+
+    func reset() {
+        lock.lock(); _inFlight = 0; _bailed = 0; _completed = 0; _open = false; lock.unlock()
+    }
+}
+
+/// Global control shared by every `SlowCancellableMock` (the resident backend
+/// constructs its engine via `Engine(modelURL:piecesURL:)`, so the control is
+/// reached the same way `initCounter` is). Reset at the top of each slow test.
+private let slowControl = SlowMockControl()
+
+/// A `FullContextEngine` whose `transcribe` blocks (staying observably
+/// in-flight) until either the control's gate opens — then it returns a
+/// non-empty transcript — or the calling Task is cancelled — then it bails
+/// early via `CancellationError`, exactly like the real Parakeet decode loop's
+/// `Task.checkCancellation()`. This makes cancel promptness deterministic
+/// without a real model.
+private actor SlowCancellableMock: FullContextEngine {
+    static let displayName = "SlowMock"
+    static let identifierSuffix = "slowmock"
+    static var supportedLocales: [Locale] { [Locale(identifier: "en-US")] }
+    nonisolated let maxAudioSamples = 16_000
+
+    init(modelURL: URL, piecesURL: URL) async throws { initCounter.bump() }
+    func prewarm() {}
+
+    func transcribe(audio: [Float]) async throws -> Transcript {
+        slowControl.enter()
+        // Bounded spin so a wedged test can't hang forever (~4 s cap).
+        for _ in 0..<2000 {
+            if Task.isCancelled { slowControl.exitBailed(); throw CancellationError() }
+            if slowControl.isOpen {
+                slowControl.exitCompleted()
+                return Transcript(text: "complete transcript", segments: [], language: nil)
+            }
+            try? await Task.sleep(for: .milliseconds(2))
+        }
+        slowControl.exitCompleted()
+        return Transcript(text: "complete transcript", segments: [], language: nil)
+    }
+}
+
 final class ResidentModelTests: XCTestCase {
 
     private let nul = URL(fileURLWithPath: "/dev/null")
@@ -120,7 +186,7 @@ final class ResidentModelTests: XCTestCase {
     /// real-time sleeps only give the idle task a chance to run — the idle
     /// *window* itself is driven by the injected `ManualClock`.
     private func awaitState(
-        _ model: ResidentFullContextModel<CountingMock>,
+        _ model: any ResidentModel,
         _ target: SpeechModelState,
         timeout: Duration = .seconds(5)
     ) async {
@@ -284,5 +350,134 @@ final class ResidentModelTests: XCTestCase {
         XCTAssertTrue(seen.contains(.loading), "should pass through .loading")
         XCTAssertTrue(seen.contains(.warming), "should pass through .warming")
         XCTAssertEqual(seen.last, .ready)
+    }
+
+    // MARK: - Cancellation / preemption (SlowCancellableMock)
+
+    private func makeSlowModel() -> ResidentFullContextModel<SlowCancellableMock> {
+        // .pinned: residency stays until we explicitly unload(), so an idle timer
+        // never interferes with the cancel/supersede assertions.
+        ResidentFullContextModel<SlowCancellableMock>(
+            modelURL: nul, piecesURL: nul, offload: .pinned, clock: ContinuousClock())
+    }
+
+    /// A 16 kHz mono Float32 buffer of `frames` samples (content irrelevant —
+    /// the mock ignores audio). Lands on the converter's fast path.
+    private func makeInput(frames: Int) -> AnalyzerInput {
+        let fmt = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32, sampleRate: 16_000,
+            channels: 1, interleaved: false)!
+        let buf = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: AVAudioFrameCount(frames))!
+        buf.frameLength = AVAudioFrameCount(frames)
+        buf.floatChannelData![0].update(repeating: 0.01, count: frames)
+        return AnalyzerInput(buffer: buf, bufferStartTime: .zero)
+    }
+
+    /// Collect every result a transcriber emits until its stream finishes.
+    private func collectResults(_ t: any Transcribing) -> Task<[TranscriptionResult], Never> {
+        let stream = t.results
+        return Task {
+            var out: [TranscriptionResult] = []
+            do { for try await r in stream { out.append(r) } } catch { }
+            return out
+        }
+    }
+
+    private func poll(_ timeout: Duration = .seconds(5), until: @Sendable () -> Bool) async {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: timeout)
+        while clock.now < deadline {
+            if until() { return }
+            try? await Task.sleep(for: .milliseconds(3))
+        }
+    }
+
+    // Cancel an in-flight (mock) pass mid-decode: the pass BAILS promptly (not
+    // run to completion), the results stream finishes with NO final emitted, and
+    // the pin is released (unload → offloaded).
+    func testCancelInFlightPassBailsPromptlyAndReleasesPin() async throws {
+        initCounter.reset(); slowControl.reset()
+        let model = makeSlowModel()
+        let t = try await model.transcriber(locale: nil)
+        try await t.prepare()
+        let collector = collectResults(t)
+
+        // ≥ refreshStride (700 ms = 11 200) but < commitThreshold → the plain
+        // refresh branch, which dispatches one engine.transcribe pass.
+        try await t.consume(makeInput(frames: 12_000))
+        await poll { slowControl.inFlight > 0 }
+        XCTAssertEqual(slowControl.inFlight, 1, "a refresh pass should be in flight")
+
+        await t.cancel()                          // prompt cancel
+        await poll { slowControl.bailed == 1 }
+        XCTAssertEqual(slowControl.bailed, 1, "the in-flight pass must bail on cancel")
+        XCTAssertEqual(slowControl.completed, 0, "no pass should run to completion")
+
+        let results = await collector.value       // finishes because cancel closed the stream
+        XCTAssertFalse(results.contains { $0.isFinal }, "no final result for a cancelled job")
+
+        await model.unload()                      // pin released → offload fires
+        await awaitState(model, .offloaded)
+    }
+
+    // Supersede: cancel a live job, then vend a NEW transcriber on the SAME
+    // resident model. The new job produces a COMPLETE final result, the engine
+    // was loaded exactly once (no reload), and no pin leaks (unload → offloaded).
+    func testSupersedeReusesWarmEngineAndCompletes() async throws {
+        initCounter.reset(); slowControl.reset()
+        let model = makeSlowModel()
+
+        let t1 = try await model.transcriber(locale: nil)
+        try await t1.prepare()
+        let c1 = collectResults(t1)
+        try await t1.consume(makeInput(frames: 12_000))
+        await poll { slowControl.inFlight > 0 }
+        await t1.cancel()
+
+        // New job on the same warm engine.
+        slowControl.open()                        // let its finalize pass complete
+        let t2 = try await model.transcriber(locale: nil)
+        try await t2.prepare()
+        let c2 = collectResults(t2)
+        try await t2.consume(makeInput(frames: 4_000))   // < refreshStride: no partial pass
+        try await t2.finalize()
+
+        let r1 = await c1.value
+        XCTAssertFalse(r1.contains { $0.isFinal }, "cancelled job emits no final")
+        let r2 = await c2.value
+        let final = r2.last { $0.isFinal }
+        XCTAssertNotNil(final, "superseding job should emit a final")
+        XCTAssertEqual(String(final!.text.characters), "complete transcript",
+                       "the new job's result should be complete")
+
+        XCTAssertEqual(initCounter.count, 1, "engine must be reused — no reload")
+        await model.unload()                      // no leaked pin
+        await awaitState(model, .offloaded)
+    }
+
+    // Single-active policy: requesting a second transcriber while one is live
+    // AUTO-CANCELS the first (supersede). The first job's in-flight pass bails
+    // and it emits no final; the second is usable.
+    func testSecondTranscriberSupersedesFirst() async throws {
+        initCounter.reset(); slowControl.reset()
+        let model = makeSlowModel()
+
+        let t1 = try await model.transcriber(locale: nil)
+        try await t1.prepare()
+        let c1 = collectResults(t1)
+        try await t1.consume(makeInput(frames: 12_000))
+        await poll { slowControl.inFlight > 0 }
+
+        // Do NOT cancel t1 explicitly — requesting t2 should supersede it.
+        let t2 = try await model.transcriber(locale: nil)
+        await poll { slowControl.bailed == 1 }
+        XCTAssertEqual(slowControl.bailed, 1, "requesting a new transcriber cancels the prior")
+
+        let r1 = await c1.value                   // t1's stream was closed by the supersede
+        XCTAssertFalse(r1.contains { $0.isFinal }, "superseded job emits no final")
+        XCTAssertEqual(initCounter.count, 1, "same warm engine — no reload")
+        await t2.cancel()                         // release t2's pin so unload can fire
+        await model.unload()
+        await awaitState(model, .offloaded)
     }
 }

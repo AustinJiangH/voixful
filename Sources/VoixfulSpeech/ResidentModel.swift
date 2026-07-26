@@ -77,6 +77,12 @@ public protocol ResidentModel: Actor {
     /// `VoixfulAnalyzer` exactly like today. Reloads transparently if the model
     /// was auto-offloaded. Auto-releases its RAM "pin" on `finalize()`/`cancel()`,
     /// with a `deinit` backstop so a forgotten teardown can't strand the model.
+    ///
+    /// Single-active: the model vends one live transcriber at a time. Requesting
+    /// a new one SUPERSEDES any prior still-live transcriber — it is cancelled
+    /// first (prompt, releasing its pin), so a barge-in / partial→complete
+    /// hand-off is safe even if the caller forgot to cancel the prior job. Two
+    /// concurrent live transcribers on the shared engine are never active.
     func transcriber(locale: Locale?) async throws -> any Transcribing
 }
 
@@ -208,6 +214,11 @@ package actor ResidentModelActor<Backend: ResidentModelBackend>: ResidentModel {
     private var inUse = 0
     private var pendingOffload = false
     private var idleTimer: Task<Void, Never>?
+    /// The currently-vended transcriber, held WEAKLY so it never keeps the model
+    /// pinned (its `deinit`/`cancel` still drives the pin). Used to enforce
+    /// single-active: a new `transcriber()` supersedes a prior still-live one by
+    /// cancelling it first (see `transcriber(locale:)`).
+    private weak var activeTranscriber: PinnedTranscriber<Backend.Vended>?
 
     private var _state: SpeechModelState = .offloaded
     private nonisolated let stateContinuation: AsyncStream<SpeechModelState>.Continuation
@@ -274,13 +285,23 @@ package actor ResidentModelActor<Backend: ResidentModelBackend>: ResidentModel {
     public func transcriber(locale: Locale?) async throws -> any Transcribing {
         inUse += 1                              // pin before the first await (#1)
         cancelIdleTimer()
+        // Single-active supersede (#5): two concurrent live transcribers on the
+        // one shared engine are unsafe for streaming (shared cache) and pointless
+        // for dictation, so a new one cancels any prior still-live transcriber.
+        // Snapshot + clear BEFORE any await so re-entrancy can't double-cancel;
+        // the cancel is prompt and releases the prior's pin (idempotent).
+        let prior = activeTranscriber
+        activeTranscriber = nil
         do {
+            if let prior { await prior.cancel() }
             let engine = try await loadedEngine()
             if _state != .ready { setState(.ready) }
             let inner = backend.makeTranscriber(engine, locale: locale)
-            return PinnedTranscriber(wrapping: inner) { [weak self] in
+            let pinned = PinnedTranscriber(wrapping: inner) { [weak self] in
                 await self?.release()
             }
+            activeTranscriber = pinned
+            return pinned
         } catch {
             release()                            // undo the pin on a failed load
             throw error
