@@ -15,6 +15,8 @@
 #   granite-speech-4.1-2b-nar-palette4.aimodel
 #   canary-qwen-2.5b-palette4.aimodel
 #   whisper-base-palette4.aimodel
+#   qwen3-asr-0.6b-palette4.aimodel
+#   qwen3-asr-1.7b-palette4.aimodel
 #
 # Builds release if needed, runs each present backend on fixtures/sample.wav, and
 # checks the transcript. Exits non-zero on any failure.
@@ -29,6 +31,8 @@ COHERE="cohere-transcribe-03-2026-palette4.aimodel"
 GRANITE="granite-speech-4.1-2b-nar-palette4.aimodel"
 CANARY="canary-qwen-2.5b-palette4.aimodel"
 WHISPER="whisper-base-palette4.aimodel"
+QWEN3_06="qwen3-asr-0.6b-palette4.aimodel"
+QWEN3_17="qwen3-asr-1.7b-palette4.aimodel"
 WAV="fixtures/sample.wav"
 BIN=".build/release/voixful"
 
@@ -60,6 +64,8 @@ run "cohere"             "$COHERE"   "quick brown fox"
 run "granite"            "$GRANITE"  "quick brown fox"
 run "canary-qwen"        "$CANARY"   "quick brown fox"
 run "whisper"            "$WHISPER"  "quick brown fox"
+run "qwen3-asr 0.6b"     "$QWEN3_06" "quick brown fox"
+run "qwen3-asr 1.7b"     "$QWEN3_17" "quick brown fox"
 
 echo ""
 echo "TOTAL: $pass passed, $fail failed, $skip skipped"

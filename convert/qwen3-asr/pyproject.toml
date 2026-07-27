@@ -1,0 +1,25 @@
+[project]
+name = "qwen3-asr-convert"
+version = "0.1.0"
+description = "Alibaba/Qwen Qwen3-ASR 0.6B/1.7B (SALM: audio encoder + Qwen3 decoder) -> torch.export -> coreai_torch -> Core AI .aimodel. See ./README.md."
+requires-python = ">=3.11"
+license = "Apache-2.0"
+dependencies = [
+    # Qwen3-ASR (Qwen3ASRForConditionalGeneration, model_type qwen3_asr) is
+    # registered in transformers 5.x — despite the checkpoint's config claiming
+    # 4.57.6, released 4.57.x does NOT have the class. Needs >=5.14.
+    "transformers>=5.14",       # Qwen3-ASR Thinker: audio encoder + Qwen3 decoder + processor
+    "safetensors>=0.8.0",       # transformers 5.x floor (coreai-opt is fine with 0.8.0)
+    "coreai-torch>=0.4.1",
+    "torch>=2.5,<3.0",
+    "numpy",
+    "soundfile",
+    "jiwer",
+    "huggingface-hub",
+    "pydantic>=2.6,<2.10",      # required for the coreai_opt --quantize path
+    # coreai-opt is needed for --quantize (install separately: `uv pip install --pre coreai-opt`)
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

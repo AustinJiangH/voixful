@@ -12,11 +12,11 @@ fully on device, on the ANE/GPU.
 
 ## What's here
 
-Seven model checkpoints ship today across six backends, spanning five
+Model checkpoints ship today across seven backends, spanning five
 architecture families (Parakeet v2 and v3 share the `VoixfulParakeetTDT` backend;
-Cohere and Whisper are both attention encoder-decoders). The backend is
-auto-detected from the `.aimodel`'s function signatures — same `transcribe` /
-`mic` commands for all of them.
+Cohere and Whisper are both attention encoder-decoders; Canary-Qwen and Qwen3-ASR
+are both SALM). The backend is auto-detected from the `.aimodel`'s function
+signatures — same `transcribe` / `mic` commands for all of them.
 
 | Model | Params | Architecture | Native streaming | Live mic | Languages | WER¹ |
 |---|---|---|---|---|---|---|
@@ -27,9 +27,12 @@ auto-detected from the `.aimodel`'s function signatures — same `transcribe` /
 | **Cohere Transcribe** `CohereLabs/cohere-transcribe-03-2026` | 2 B | attention encoder-decoder | no (re-transcribe partials) | ok (~0.3 s passes) | **14 languages** | 5.20 |
 | **Canary-Qwen** `nvidia/canary-qwen-2.5b` | 2.5 B | SALM: Conformer + Qwen3-1.7B | no (re-transcribe partials) | sluggish (~3–4 s passes) — prefer for files | English only | 5.06 |
 | **Whisper** `openai/whisper-base` (…tiny/small/large-v3) | 74 M–1.5 B | attention encoder-decoder (fixed 30 s window) | no (re-transcribe partials) | good (30 s single-pass) | **multilingual** (99 languages) | 7.5² |
+| **Qwen3-ASR** `Qwen/Qwen3-ASR-0.6B` / `-1.7B` | 0.6 B / 1.7 B | SALM: audio encoder + Qwen3 decoder | no (re-transcribe partials) | files (provisional) | **multilingual** (52 languages) | 5.76³ |
 
 ¹ Open ASR Leaderboard mean WER (lower is better), for the source checkpoints.
 ² Whisper WER is size-dependent (base ≈ 7–10%, large-v3 ≈ 4%); the row lists the `-base` default.
+
+³ Qwen3-ASR WER is the reported Qwen3-ASR-1.7B multilingual average; the 0.6B variant is not yet on the leaderboard. The **0.6B is converted and validated on-device** (`convert/qwen3-asr`, palette4 encoder + palette6 decoder; transcribes the fixture exactly). It's not yet published for download, so import the locally-converted asset to run it. Compute placement: the engine specializes the asset twice and defaults to **encode→CPU, decode→ANE** (~2.75 s / 5.5 s clip) — ANE fp16 flips argmax in the audio encoder, so the encoder stays on CPU. The 1.7B is registered but not yet converted.
 
 **Streaming vs. live mic.** Only Nemotron streams natively (its encoder is
 cache-aware, so words appear *while* you speak). Every other backend is
@@ -82,7 +85,7 @@ swift build -c release
 ```
 
 `voixful transcribe` **auto-detects** the backend from the `.aimodel`; override
-with `--backend nemotron|parakeet|cohere|granite|canary|whisper` if needed.
+with `--backend nemotron|parakeet|cohere|granite|canary|whisper|qwen3` if needed.
 
 The model `.aimodel` is **not** committed (it's gitignored, ~hundreds of MB to
 GBs). Get it from Hugging Face (see [Distribution](#distribution)) or regenerate
@@ -216,13 +219,14 @@ voixful/
 ├── Sources/
 │   ├── VoixfulSpeech/          # brand core (analyzer + protocols + types)
 │   ├── VoixfulTUI/             # reusable live-mic terminal UI
-│   ├── VoixfulEngine/          # engines: Nemotron/ Parakeet/ Cohere/ Granite/ Canary/ Whisper/ Shared/
+│   ├── VoixfulEngine/          # engines: Nemotron/ Parakeet/ Cohere/ Granite/ Canary/ Whisper/ Qwen3ASR/ Shared/
 │   ├── VoixfulNemotronStreaming/   # NemotronStreamingTranscriber : Transcribing
 │   ├── VoixfulParakeetTDT/         # ParakeetTDTTranscriber : Transcribing
 │   ├── VoixfulCohereTranscribe/    # CohereTranscriber : Transcribing
 │   ├── VoixfulGraniteNAR/          # GraniteTranscriber : Transcribing
 │   ├── VoixfulCanaryQwen/          # CanaryTranscriber : Transcribing
 │   ├── VoixfulWhisper/             # WhisperTranscriber : Transcribing
+│   ├── VoixfulQwen3ASR/            # Qwen3ASRTranscriber : Transcribing
 │   ├── VoixfulFullContext/         # LiveFullContextTranscriber (live mic for the above)
 │   └── VoixfulCLI/             # `voixful` executable
 ├── convert/                    # model conversion, one dir per model
@@ -231,6 +235,7 @@ voixful/
 │   ├── cohere-transcribe/      # attention encoder-decoder pipeline
 │   ├── granite-speech/         # CTC + single-pass LLM editor (NAR) pipeline
 │   ├── canary-qwen/            # SALM (Conformer + Qwen3) pipeline
+│   ├── qwen3-asr/              # SALM (audio encoder + Qwen3) pipeline — scaffold
 │   └── whisper/                # attention encoder-decoder pipeline (fixed 30 s)
 ├── Tests/ · scripts/ · fixtures/
 ```
@@ -269,6 +274,7 @@ Two licenses, by artifact type:
   | Granite NAR | `ibm-granite/granite-speech-4.1-2b-nar` | Apache-2.0 |
   | Canary-Qwen | `nvidia/canary-qwen-2.5b` | CC-BY-4.0 |
   | Whisper | `openai/whisper-*` | MIT |
+  | Qwen3-ASR | `Qwen/Qwen3-ASR-0.6B` / `-1.7B` | Apache-2.0 |
 
   See [`MODEL_CARD.md`](MODEL_CARD.md) and the per-model `convert/*/README.md`.
 

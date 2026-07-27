@@ -11,6 +11,15 @@ final class BackendClassifyTests: XCTestCase {
         ModelBackend.AssetFunctions(names: names, encodeHasStates: encodeHasStates)
     }
 
+    func testQwen3ByStepEntrypoint() {
+        // Qwen3-ASR ships a distinct `step_qwen3` AR entrypoint; its stateless
+        // encode_<T> functions must not shadow it down to Parakeet.
+        XCTAssertEqual(
+            ModelBackend.classify(fns(
+                ["encode_1000", "embed_256", "prefill_asr_160", "step_qwen3"])),
+            .qwen3)
+    }
+
     func testCanaryByStepEntrypoint() {
         XCTAssertEqual(
             ModelBackend.classify(fns(

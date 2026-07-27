@@ -22,6 +22,7 @@ import VoixfulCohereTranscribe
 import VoixfulGraniteNAR
 import VoixfulCanaryQwen
 import VoixfulWhisper
+import VoixfulQwen3ASR
 
 /// Inputs a batch (file/one-shot) transcriber needs.
 public struct BatchContext: Sendable {
@@ -152,6 +153,12 @@ public enum BackendRegistry {
             return fullContext(
                 WhisperEngine.self,
                 batch: { ctx in WhisperTranscriber(
+                    modelURL: ctx.modelURL, piecesURL: ctx.piecesURL, locale: ctx.locale) })
+
+        case .qwen3:
+            return fullContext(
+                Qwen3ASREngine.self,
+                batch: { ctx in Qwen3ASRTranscriber(
                     modelURL: ctx.modelURL, piecesURL: ctx.piecesURL, locale: ctx.locale) })
         }
     }
