@@ -5,6 +5,8 @@
 // a runnable model (that would share a cached instance with the engine and
 // corrupt the streaming encoder's state setup):
 //
+//   - Qwen3-ASR (SALM): has a `step_qwen3` function (autoregressive Qwen3 decode,
+//     Alibaba/Qwen). Distinct entrypoint name keeps it apart from Canary's `step_asr`.
 //   - Canary-Qwen (SALM): has a `step_asr` function (autoregressive Qwen3 decode).
 //   - Granite (NAR): has `edit_<A>_<U>` single-pass LLM edit functions.
 //   - Whisper (attention encoder-decoder): has a `whisper_decode` function (the
@@ -18,7 +20,7 @@ import CoreAI
 import Foundation
 
 public enum ModelBackend: String, Sendable, CaseIterable {
-    case nemotron, parakeet, cohere, granite, canary, whisper
+    case nemotron, parakeet, cohere, granite, canary, whisper, qwen3
 
     /// Longest audio the backend's standard converted asset transcribes in ONE
     /// pass — the SMALLER of its fixed encoder window and any downstream decoder
@@ -29,6 +31,8 @@ public enum ModelBackend: String, Sendable, CaseIterable {
     ///   • cohere   — 15 s (108-token AED decoder cap binds before the 35 s window)
     ///   • granite  — 32 s (largest 1600-frame encoder window; token budget scales)
     ///   • canary   — 36 s (256-token decode cap binds before the 40 s window)
+    ///   • qwen3    — 30 s (audio tower's fixed 30 s Whisper window / 3000 mel
+    ///                frames; converted asset ships a single encode_3000)
     ///   • whisper  — 30 s (Whisper's fixed 30 s encoder window; audio is always
     ///                padded/truncated to it)
     ///   • nemotron — nil  (cache-aware streaming; no window, unbounded)
@@ -44,6 +48,7 @@ public enum ModelBackend: String, Sendable, CaseIterable {
         case .cohere:   return 15
         case .granite:  return 32
         case .canary:   return 36
+        case .qwen3:    return 30
         case .whisper:  return 30
         }
     }
@@ -76,6 +81,13 @@ extension ModelBackend {
     /// decoders (decode_x4/decode_step_fused); `decode_step` is the legacy
     /// stateless program, exported only under `--legacy-decoders`.
     public static func classify(_ fns: AssetFunctions) -> ModelBackend {
+        // Qwen3-ASR SALM (Alibaba/Qwen): AR Qwen3 step function. Distinct
+        // entrypoint (`step_qwen3`) so it isn't confused with Canary's `step_asr`;
+        // like Canary its encode_<T> functions are stateless (would else fall
+        // through to Parakeet), so it's checked up here before the fallbacks.
+        if fns.names.contains("step_qwen3") {
+            return .qwen3
+        }
         // Canary-Qwen SALM: AR Qwen3 step functions. Checked first — its
         // encode_<T> functions are stateless like Parakeet's.
         if fns.names.contains("step_asr") {

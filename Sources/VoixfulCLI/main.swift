@@ -20,6 +20,7 @@ struct Voixful: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "voixful",
         abstract: "Voixful on-device speech — a SpeechAnalyzer-shaped API over local models.",
+        version: voixfulVersion,
         subcommands: [Transcribe.self, Mic.self, Languages.self]
     )
 }
@@ -41,7 +42,7 @@ struct Transcribe: AsyncParsableCommand {
     @Option(help: "Path to the .aimodel directory.")
     var model: String
 
-    @Option(help: "Force the model architecture (nemotron/parakeet/cohere/granite/canary/whisper). Default: auto-detect from the model.")
+    @Option(help: "Force the model architecture (nemotron/parakeet/cohere/granite/canary/whisper/qwen3). Default: auto-detect from the model.")
     var backend: ModelBackend?
 
     @Option(help: "SentencePiece vocab for parakeet/cohere/granite/canary. Default: sibling 'pieces.txt' of the model.")

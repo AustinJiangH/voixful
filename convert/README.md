@@ -25,6 +25,9 @@ convert/
 ├── canary-qwen/              ← Canary-Qwen 2.5B (SALM: Conformer + Qwen3-1.7B)
 │   ├── pyproject.toml · README.md
 │   └── canary_convert/       ← convert.py / extract.py / export.py / models.py / …
+├── qwen3-asr/                ← Qwen3-ASR 0.6B/1.7B (SALM: audio encoder + Qwen3) — scaffold
+│   ├── pyproject.toml · README.md
+│   └── qwen3_asr_convert/    ← convert.py (scaffold; contract pinned, export TBD)
 └── whisper/                  ← OpenAI Whisper (attention encoder-decoder)
     ├── pyproject.toml · README.md
     └── whisper_convert/      ← convert.py / extract.py / export.py / models.py
@@ -89,4 +92,6 @@ so these compressed models run only via the streaming `feed()` path — the batc
   - **Granite Speech** (`ibm-granite/granite-speech-4.1-2b-nar`) → **Apache-2.0**
     (upstream weights; retain attribution).
   - **Canary-Qwen** (`nvidia/canary-qwen-2.5b`) → **CC-BY-4.0** (attribution only).
+  - **Qwen3-ASR** (`Qwen/Qwen3-ASR-0.6B`, `Qwen/Qwen3-ASR-1.7B`) → **Apache-2.0**
+    (upstream weights; retain attribution).
   - **Whisper** (`openai/whisper-*`) → **MIT** (upstream weights; retain attribution).

@@ -22,6 +22,7 @@ let package = Package(
         .library(name: "VoixfulGraniteNAR", targets: ["VoixfulGraniteNAR"]),
         .library(name: "VoixfulCanaryQwen", targets: ["VoixfulCanaryQwen"]),
         .library(name: "VoixfulWhisper", targets: ["VoixfulWhisper"]),
+        .library(name: "VoixfulQwen3ASR", targets: ["VoixfulQwen3ASR"]),
         // Shared full-context (batch) transcriber lifecycle (Parakeet + Cohere).
         .library(name: "VoixfulFullContext", targets: ["VoixfulFullContext"]),
         // Umbrella: imports every backend; holds the BackendRegistry table + the
@@ -82,6 +83,10 @@ let package = Package(
             name: "VoixfulWhisper",
             dependencies: ["VoixfulSpeech", "VoixfulEngine", "VoixfulFullContext"]
         ),
+        .target(
+            name: "VoixfulQwen3ASR",
+            dependencies: ["VoixfulSpeech", "VoixfulEngine", "VoixfulFullContext"]
+        ),
 
         // MARK: Umbrella — every backend + the registry table + ResidentModel.load
         .target(
@@ -96,6 +101,7 @@ let package = Package(
                 "VoixfulGraniteNAR",
                 "VoixfulCanaryQwen",
                 "VoixfulWhisper",
+                "VoixfulQwen3ASR",
             ]
         ),
 
@@ -133,12 +139,14 @@ let package = Package(
             // `ModelRegistry.bundled`. Copied verbatim so it stays human-editable.
             resources: [
                 .copy("Resources/models.json"),
-            ],
-            // Opt into Accelerate's new (non-deprecated) CBLAS/LAPACK interface so
-            // the cblas_* calls in CPUTransducerDecoder don't warn on macOS 13.3+.
-            swiftSettings: [
-                .unsafeFlags(["-Xcc", "-DACCELERATE_NEW_LAPACK=1"])
             ]
+            // NOTE: we intentionally do NOT pass `-Xcc -DACCELERATE_NEW_LAPACK=1`
+            // via `.unsafeFlags` here. SwiftPM forbids resolving a package by
+            // version tag if any depended-on product uses unsafe flags, which
+            // would block `.package(url:, from: "x.y.z")`. The flag only silenced
+            // Accelerate CBLAS deprecation warnings; dropping it keeps the package
+            // version-consumable. (Follow-up: move the cblas_* calls behind a tiny
+            // C shim target that sets the macro via the safe `.define` cSetting.)
         ),
         .testTarget(
             name: "VoixfulEngineTests",
