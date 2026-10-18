@@ -24,6 +24,10 @@ final class BackendIntegrationTests: XCTestCase {
     static let nemotron = "nemotron-speech-streaming-en-0.6b-palette4.aimodel"
     static let parakeet = "parakeet-tdt-0.6b-v3-palette4.aimodel"
     static let cohere = "cohere-transcribe-03-2026-palette4.aimodel"
+    /// The published Parakeet v3 build, which ships the CPU-decode sidecar
+    /// (`<asset>.transducer.bin`) — the only thing vocab is validated against
+    /// since the engine went vocab-agnostic.
+    static let parakeetWithSidecar = "parakeet-tdt-0.6b-v3-palette4-30s.aimodel"
 
     private func modelsDir() throws -> URL {
         guard let d = ProcessInfo.processInfo.environment["VOIXFUL_TEST_MODELS_DIR"], !d.isEmpty else {
@@ -89,7 +93,8 @@ final class BackendIntegrationTests: XCTestCase {
     /// garbage — load the Parakeet model with Nemotron's 1024-piece vocab.
     func testWrongVocabRejected() async throws {
         let dir = try modelsDir()
-        let model = dir.appendingPathComponent(Self.parakeet)
+        let model = dir.appendingPathComponent(Self.parakeetWithSidecar)
+        try require(URL(fileURLWithPath: model.path + ".transducer.bin"))
         // Nemotron's 1024-piece vocab, bundled inside the Nemotron asset.
         let wrongPieces = dir.appendingPathComponent(Self.nemotron)
             .appendingPathComponent("pieces.txt")

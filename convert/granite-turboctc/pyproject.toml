@@ -1,0 +1,27 @@
+[project]
+name = "granite-turboctc-convert"
+version = "0.1.0"
+description = "IBM Granite Speech 5.0 TurboCTC (470M, CTC) -> torch.export -> coreai_torch -> Core AI .aimodel. See ./README.md."
+requires-python = ">=3.11"
+license = "Apache-2.0"
+dependencies = [
+    # Native GraniteSpeech5ForCTC support (the checkpoint uses its weight names).
+    # Own venv: do NOT share with convert/granite-speech (pins an older 5.x).
+    "transformers>=5.16,<6",
+    "coreai-torch>=0.4.3",
+    "torch>=2.9.1,<2.14",       # coreai-torch 0.4.3 is validated up to torch 2.13
+    "torchaudio",               # reference feature extractor (MelSpectrogram, compute_deltas)
+    "numpy",
+    "safetensors>=0.8.0",
+    "huggingface-hub",
+    "soundfile",                # self-check / parity audio decode
+    "pydantic>=2.6,<2.10",      # required for the coreai_opt --quantize path
+    # coreai-opt is needed for --quantize (install separately: `uv pip install --pre coreai-opt`)
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["turboctc_convert"]

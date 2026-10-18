@@ -24,6 +24,7 @@ signatures — same `transcribe` / `mic` commands for all of them.
 | **Parakeet v2** `nvidia/parakeet-tdt-0.6b-v2` | 0.6 B | full-context TDT | no (re-transcribe partials) | great (fastest passes, ~70 ms) | English only | 5.39 |
 | **Parakeet v3** `nvidia/parakeet-tdt-0.6b-v3` | 0.6 B | full-context TDT | no (re-transcribe partials) | great (~75 ms passes) | **25 languages** (European incl. en/de/fr/es/it/pt/pl/uk/ru…) | 5.66 |
 | **Granite NAR** `ibm-granite/granite-speech-4.1-2b-nar` | 2.2 B | CTC + single-pass LLM editor (no decode loop) | no (re-transcribe partials) | good (~0.3 s passes) | **en, fr, de, es, pt** | 4.95 (best) |
+| **Granite TurboCTC** `ibm-granite/granite-speech-5.0-470m-turboctc` | 0.47 B | block-attention conformer + CTC (one graph, no decode loop) | no (re-transcribe partials) | great (~70 ms passes) | English only — lowercase, no punctuation | 5.00 |
 | **Cohere Transcribe** `CohereLabs/cohere-transcribe-03-2026` | 2 B | attention encoder-decoder | no (re-transcribe partials) | ok (~0.3 s passes) | **14 languages** | 5.20 |
 | **Canary-Qwen** `nvidia/canary-qwen-2.5b` | 2.5 B | SALM: Conformer + Qwen3-1.7B | no (re-transcribe partials) | sluggish (~3–4 s passes) — prefer for files | English only | 5.06 |
 | **Whisper** `openai/whisper-base` (…tiny/small/large-v3) | 74 M–1.5 B | attention encoder-decoder (fixed 30 s window) | no (re-transcribe partials) | good (30 s single-pass) | **multilingual** (99 languages) | 7.5² |
@@ -48,9 +49,9 @@ The Swift package layers them behind one model-agnostic façade:
   `VoixfulSpeechModule` / `Transcribing` protocols, `AnalyzerInput`,
   `TranscriptionResult`. Depends on no model.
 - **`VoixfulEngine`** — the engines themselves, organized per architecture under
-  `Nemotron/`, `Parakeet/`, `Cohere/`, `Granite/`, `Canary/`, `Whisper/`, and `Shared/`.
+  `Nemotron/`, `Parakeet/`, `Cohere/`, `Granite/`, `TurboCTC/`, `Canary/`, `Whisper/`, and `Shared/`.
 - **`VoixfulNemotronStreaming`** / **`VoixfulParakeetTDT`** / **`VoixfulCohereTranscribe`**
-  / **`VoixfulGraniteNAR`** / **`VoixfulCanaryQwen`** / **`VoixfulWhisper`** — thin
+  / **`VoixfulGraniteNAR`** / **`VoixfulGraniteTurboCTC`** / **`VoixfulCanaryQwen`** / **`VoixfulWhisper`** — thin
   per-architecture façade targets, each exposing a `Transcribing` conformer over its engine.
 - **`VoixfulFullContext`** — the live-mic wrapper for the non-streaming backends
   (`LiveFullContextTranscriber`): re-transcribes the growing utterance on a
@@ -85,7 +86,7 @@ swift build -c release
 ```
 
 `voixful transcribe` **auto-detects** the backend from the `.aimodel`; override
-with `--backend nemotron|parakeet|cohere|granite|canary|whisper|qwen3` if needed.
+with `--backend nemotron|parakeet|cohere|granite|canary|whisper|qwen3|turboctc` if needed.
 
 The model `.aimodel` is **not** committed (it's gitignored, ~hundreds of MB to
 GBs). Get it from Hugging Face (see [Distribution](#distribution)) or regenerate
@@ -189,6 +190,7 @@ Warm per-utterance numbers, M5 Pro, 5.5 s clip, palette4 assets:
 | Cohere 2B (AED) | ~0.29 s | mel 1 / encode 127 / decode 160 ms | + ~1.1 s one-time encoder window load, hidden by `prepare()` prewarm in session use |
 | Parakeet v2 (English) | ~0.07 s | mel 2 / encode 58 / decode 11 ms | best English WER of the small tier (5.39 leaderboard avg) |
 | Granite NAR 2B | ~0.29 s | encode 115 / edit 170 ms (mel in-graph) | best WER we ship (4.95); NO autoregressive loop — two dispatches per clip; `GRANITE_TRACE=1` |
+| Granite TurboCTC 470M | ~0.07 s | one dispatch (mel + encoder + CTC argmax in-graph): 65 ms @10 s window, 89 ms @20 s | WER 5.00 at Parakeet size; lowercase/no punctuation; `TURBOCTC_TRACE=1` |
 | Canary-Qwen 2.5B | ~4 s | encode ~1-2 s / decode ~150 ms/token | best punctuation+casing; decode is state-transfer-bound (235 MB KV round-trip/step) — x4 unrolling + fp16 states are the known fixes; `CANARY_TRACE=1` |
 
 - **Multi-window encoders** (all three backends): the runtime picks the smallest
@@ -219,11 +221,12 @@ voixful/
 ├── Sources/
 │   ├── VoixfulSpeech/          # brand core (analyzer + protocols + types)
 │   ├── VoixfulTUI/             # reusable live-mic terminal UI
-│   ├── VoixfulEngine/          # engines: Nemotron/ Parakeet/ Cohere/ Granite/ Canary/ Whisper/ Qwen3ASR/ Shared/
+│   ├── VoixfulEngine/          # engines: Nemotron/ Parakeet/ Cohere/ Granite/ TurboCTC/ Canary/ Whisper/ Qwen3ASR/ Shared/
 │   ├── VoixfulNemotronStreaming/   # NemotronStreamingTranscriber : Transcribing
 │   ├── VoixfulParakeetTDT/         # ParakeetTDTTranscriber : Transcribing
 │   ├── VoixfulCohereTranscribe/    # CohereTranscriber : Transcribing
 │   ├── VoixfulGraniteNAR/          # GraniteTranscriber : Transcribing
+│   ├── VoixfulGraniteTurboCTC/     # TurboCTCTranscriber : Transcribing
 │   ├── VoixfulCanaryQwen/          # CanaryTranscriber : Transcribing
 │   ├── VoixfulWhisper/             # WhisperTranscriber : Transcribing
 │   ├── VoixfulQwen3ASR/            # Qwen3ASRTranscriber : Transcribing

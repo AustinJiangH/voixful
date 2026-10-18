@@ -75,12 +75,11 @@ whisper-large-v3 (~2.5 s) → 3 · canary (~4 s) → 2.
 
 ## Estimated vs. measured
 
-`convertedSizeMB` is **measured** (`du -sm` of the beta3 palette4 asset) for
-every entry — nemotron, parakeet v2/v3, granite, cohere, canary, and all six
-Whisper variants (base, base.en, small, medium, large-v3-turbo, large-v3). Canary's number
-is taken from the decoder-split `canary-qwen-2.5b-palette4-d.aimodel`, the only
-palette4 asset for that model on disk (see its `notes`). The Whisper entries carry
-a `notes` caveat: assets are converted + verified locally, but their Hugging Face
-repos are publish-pending and only the English path is benchmarked so far. `wer`
+`convertedSizeMB` is **measured** (`du -sm` of the published palette4 asset).
+Canary and Granite TurboCTC were measured on their release-toolchain builds
+(coreai-core 1.0.0b3; Canary's fp16-KV build is larger than the earlier beta
+build). Every other entry is still the beta build's size, which the release
+rebuilds match to within ~10 MB. Cohere is measured locally only (not
+published). `wer`
 values are Open ASR Leaderboard means; the Whisper figures are the published
 English WERs for each checkpoint.

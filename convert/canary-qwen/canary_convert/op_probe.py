@@ -129,7 +129,8 @@ def main(argv=None) -> int:
         print(f"exported {name}")
 
     prog = converter.to_coreai()
-    prog.optimize()
+    if hasattr(prog, "optimize"):  # coreai-core < 1.0.0b3; b3+ optimizes on build
+        prog.optimize()
     out_path = scratch / "op-probe.aimodel"
     if out_path.exists():
         shutil.rmtree(out_path)

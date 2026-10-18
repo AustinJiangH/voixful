@@ -282,7 +282,8 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     ai_program = converter.to_coreai()
-    ai_program.optimize()
+    if hasattr(ai_program, "optimize"):  # coreai-core < 1.0.0b3; b3+ optimizes on build
+        ai_program.optimize()
     if output_path.exists():
         # save_asset refuses to overwrite (FileExistsError on main.mlirb);
         # treat the output like any build artifact and replace it.
@@ -334,7 +335,8 @@ def main(argv: list[str] | None = None) -> int:
             output_names=["tokens"],
         )
         dec_program = dec_converter.to_coreai()
-        dec_program.optimize()
+        if hasattr(dec_program, "optimize"):  # coreai-core < 1.0.0b3; b3+ optimizes on build
+            dec_program.optimize()
         if dec_path.exists():
             import shutil
             shutil.rmtree(dec_path)
