@@ -195,6 +195,32 @@
       }
     },
     {
+      "id": "granite-speech-5.0-470m-turboctc",
+      "displayName": "Granite TurboCTC",
+      "backend": "turboctc",
+      "architecture": "block-attention conformer + CTC (one graph, no decode loop)",
+      "upstreamRepo": "ibm-granite/granite-speech-5.0-470m-turboctc",
+      "streaming": false,
+      "languages": [
+        "en"
+      ],
+      "params": "0.47B",
+      "convertedSizeMB": 260,
+      "singlePassWindowSeconds": 30,
+      "accuracy": 9,
+      "speed": 9,
+      "shortDescription": "Near-best accuracy at Parakeet size; lowercase, no punctuation.",
+      "wer": 5.0,
+      "license": "Apache-2.0",
+      "excludeFromDownloads": false,
+      "download": {
+        "source": "huggingface",
+        "repo": "AustinJiangH/voixful-granite-speech-5.0-470m-turboctc",
+        "revision": "main",
+        "assetName": "granite-speech-5.0-470m-turboctc-palette4.aimodel"
+      }
+    },
+    {
       "id": "cohere-transcribe-03-2026",
       "displayName": "Cohere Transcribe",
       "backend": "cohere",
@@ -245,7 +271,7 @@
         "en"
       ],
       "params": "2.5B",
-      "convertedSizeMB": 2509,
+      "convertedSizeMB": 3679,
       "singlePassWindowSeconds": 36,
       "accuracy": 8,
       "speed": 2,

@@ -9,6 +9,8 @@
 //     Alibaba/Qwen). Distinct entrypoint name keeps it apart from Canary's `step_asr`.
 //   - Canary-Qwen (SALM): has a `step_asr` function (autoregressive Qwen3 decode).
 //   - Granite (NAR): has `edit_<A>_<U>` single-pass LLM edit functions.
+//   - Granite TurboCTC: has `ctc_<F>` functions (encoder + CTC head + argmax in
+//     one graph; no decoder at all).
 //   - Whisper (attention encoder-decoder): has a `whisper_decode` function (the
 //     distinctive name keeps it apart from Cohere's `decode_step*`).
 //   - Cohere (attention encoder-decoder): has a `decode_step*` function.
@@ -20,7 +22,7 @@ import CoreAI
 import Foundation
 
 public enum ModelBackend: String, Sendable, CaseIterable {
-    case nemotron, parakeet, cohere, granite, canary, whisper, qwen3
+    case nemotron, parakeet, cohere, granite, canary, whisper, qwen3, turboctc
 
     /// Longest audio the backend's standard converted asset transcribes in ONE
     /// pass — the SMALLER of its fixed encoder window and any downstream decoder
@@ -30,6 +32,8 @@ public enum ModelBackend: String, Sendable, CaseIterable {
     ///                value in parakeet.json — older 1000-frame assets are 10 s)
     ///   • cohere   — 15 s (108-token AED decoder cap binds before the 35 s window)
     ///   • granite  — 32 s (largest 1600-frame encoder window; token budget scales)
+    ///   • turboctc — 30 s (largest 1536-frame window ≈ 30.7 s; turboctc.json
+    ///                carries the exact table)
     ///   • canary   — 36 s (256-token decode cap binds before the 40 s window)
     ///   • qwen3    — 30 s (audio tower's fixed 30 s Whisper window / 3000 mel
     ///                frames; converted asset ships a single encode_3000)
@@ -47,6 +51,7 @@ public enum ModelBackend: String, Sendable, CaseIterable {
         case .parakeet: return 30
         case .cohere:   return 15
         case .granite:  return 32
+        case .turboctc: return 30
         case .canary:   return 36
         case .qwen3:    return 30
         case .whisper:  return 30
@@ -96,6 +101,11 @@ extension ModelBackend {
         // Granite NAR: single-pass LLM edit entrypoints (edit_<A>_<U>).
         if fns.names.contains(where: { $0.hasPrefix("edit_") }) {
             return .granite
+        }
+        // Granite TurboCTC: pure-CTC window functions (ctc_<F>). No decoder
+        // entrypoint at all, so nothing below would claim it anyway.
+        if fns.names.contains(where: { $0.hasPrefix("ctc_") }) {
+            return .turboctc
         }
         // Whisper AED: distinctively-named decode entrypoint. Checked BEFORE
         // Cohere so the generic `decode_*` rule below can't shadow it.

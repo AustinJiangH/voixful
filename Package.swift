@@ -20,6 +20,7 @@ let package = Package(
         .library(name: "VoixfulParakeetTDT", targets: ["VoixfulParakeetTDT"]),
         .library(name: "VoixfulCohereTranscribe", targets: ["VoixfulCohereTranscribe"]),
         .library(name: "VoixfulGraniteNAR", targets: ["VoixfulGraniteNAR"]),
+        .library(name: "VoixfulGraniteTurboCTC", targets: ["VoixfulGraniteTurboCTC"]),
         .library(name: "VoixfulCanaryQwen", targets: ["VoixfulCanaryQwen"]),
         .library(name: "VoixfulWhisper", targets: ["VoixfulWhisper"]),
         .library(name: "VoixfulQwen3ASR", targets: ["VoixfulQwen3ASR"]),
@@ -76,6 +77,10 @@ let package = Package(
             dependencies: ["VoixfulSpeech", "VoixfulEngine", "VoixfulFullContext"]
         ),
         .target(
+            name: "VoixfulGraniteTurboCTC",
+            dependencies: ["VoixfulSpeech", "VoixfulEngine", "VoixfulFullContext"]
+        ),
+        .target(
             name: "VoixfulCanaryQwen",
             dependencies: ["VoixfulSpeech", "VoixfulEngine", "VoixfulFullContext"]
         ),
@@ -99,6 +104,7 @@ let package = Package(
                 "VoixfulParakeetTDT",
                 "VoixfulCohereTranscribe",
                 "VoixfulGraniteNAR",
+                "VoixfulGraniteTurboCTC",
                 "VoixfulCanaryQwen",
                 "VoixfulWhisper",
                 "VoixfulQwen3ASR",

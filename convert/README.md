@@ -22,6 +22,9 @@ convert/
 ├── granite-speech/           ← Granite Speech 4.1 2B NAR (CTC + single-pass LLM editor)
 │   ├── pyproject.toml · README.md
 │   └── granite_convert/      ← convert.py / extract.py / export.py / models.py
+├── granite-turboctc/         ← Granite Speech 5.0 TurboCTC 470M (pure CTC, one graph per window)
+│   ├── pyproject.toml · README.md
+│   └── turboctc_convert/     ← convert.py / export.py / models.py / reference.py
 ├── canary-qwen/              ← Canary-Qwen 2.5B (SALM: Conformer + Qwen3-1.7B)
 │   ├── pyproject.toml · README.md
 │   └── canary_convert/       ← convert.py / extract.py / export.py / models.py / …
@@ -90,6 +93,7 @@ so these compressed models run only via the streaming `feed()` path — the batc
   - **Cohere Transcribe** (`CohereLabs/cohere-transcribe-03-2026`) → its own upstream
     license (gated model — see `cohere-transcribe/README.md`).
   - **Granite Speech** (`ibm-granite/granite-speech-4.1-2b-nar`) → **Apache-2.0**
+  - **Granite Speech TurboCTC** (`ibm-granite/granite-speech-5.0-470m-turboctc`) → **Apache-2.0**
     (upstream weights; retain attribution).
   - **Canary-Qwen** (`nvidia/canary-qwen-2.5b`) → **CC-BY-4.0** (attribution only).
   - **Qwen3-ASR** (`Qwen/Qwen3-ASR-0.6B`, `Qwen/Qwen3-ASR-1.7B`) → **Apache-2.0**

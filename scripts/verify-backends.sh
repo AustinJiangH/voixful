@@ -13,6 +13,7 @@
 #   parakeet-tdt-0.6b-v3-palette4.aimodel
 #   cohere-transcribe-03-2026-palette4.aimodel
 #   granite-speech-4.1-2b-nar-palette4.aimodel
+#   granite-speech-5.0-470m-turboctc-palette4.aimodel
 #   canary-qwen-2.5b-palette4.aimodel
 #   whisper-base-palette4.aimodel
 #   qwen3-asr-0.6b-palette4.aimodel
@@ -29,6 +30,7 @@ NEMOTRON="nemotron-speech-streaming-en-0.6b-palette4.aimodel"
 PARAKEET="parakeet-tdt-0.6b-v3-palette4.aimodel"
 COHERE="cohere-transcribe-03-2026-palette4.aimodel"
 GRANITE="granite-speech-4.1-2b-nar-palette4.aimodel"
+TURBOCTC="granite-speech-5.0-470m-turboctc-palette4.aimodel"
 CANARY="canary-qwen-2.5b-palette4.aimodel"
 WHISPER="whisper-base-palette4.aimodel"
 QWEN3_06="qwen3-asr-0.6b-palette4.aimodel"
@@ -62,6 +64,7 @@ run "nemotron json"      "$NEMOTRON" "text" --format json
 run "parakeet"           "$PARAKEET" "quick brown fox"
 run "cohere"             "$COHERE"   "quick brown fox"
 run "granite"            "$GRANITE"  "quick brown fox"
+run "turboctc"           "$TURBOCTC" "quick brown fox"
 run "canary-qwen"        "$CANARY"   "quick brown fox"
 run "whisper"            "$WHISPER"  "quick brown fox"
 run "qwen3-asr 0.6b"     "$QWEN3_06" "quick brown fox"

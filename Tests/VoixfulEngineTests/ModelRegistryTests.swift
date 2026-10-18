@@ -10,12 +10,12 @@ final class ModelRegistryTests: XCTestCase {
         let registry = try ModelRegistry.load()
         XCTAssertFalse(registry.models.isEmpty, "registry should ship models")
         XCTAssertEqual(registry.schemaVersion, 1)
-        // Fourteen entries: the 4 single-checkpoint backends (nemotron, granite,
-        // cohere, canary) + Parakeet v2/v3 + six Whisper variants (base,
+        // Fifteen entries: the 5 single-checkpoint backends (nemotron, granite,
+        // turboctc, cohere, canary) + Parakeet v2/v3 + six Whisper variants (base,
         // base.en, small, large-v3-turbo, medium, large-v3) + Qwen3-ASR 0.6B/1.7B.
         // Cohere and both Qwen3-ASR entries are included but excluded from
         // downloads (gated / not-yet-converted).
-        XCTAssertEqual(registry.models.count, 14)
+        XCTAssertEqual(registry.models.count, 15)
     }
 
     /// `downloadDir` is set and expands its leading `~`.

@@ -20,6 +20,7 @@ import VoixfulNemotronStreaming
 import VoixfulParakeetTDT
 import VoixfulCohereTranscribe
 import VoixfulGraniteNAR
+import VoixfulGraniteTurboCTC
 import VoixfulCanaryQwen
 import VoixfulWhisper
 import VoixfulQwen3ASR
@@ -138,6 +139,12 @@ public enum BackendRegistry {
             return fullContext(
                 GraniteNAREngine.self,
                 batch: { ctx in GraniteTranscriber(
+                    modelURL: ctx.modelURL, piecesURL: ctx.piecesURL, locale: ctx.locale) })
+
+        case .turboctc:
+            return fullContext(
+                TurboCTCEngine.self,
+                batch: { ctx in TurboCTCTranscriber(
                     modelURL: ctx.modelURL, piecesURL: ctx.piecesURL, locale: ctx.locale) })
 
         case .canary:
