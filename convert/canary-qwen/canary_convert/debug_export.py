@@ -48,7 +48,8 @@ def main(argv=None) -> int:
     )
     print("exported step")
     prog = converter.to_coreai()
-    prog.optimize()
+    if hasattr(prog, "optimize"):  # coreai-core < 1.0.0b3; b3+ optimizes on build
+        prog.optimize()
     out = Path(args.out)
     if out.exists():
         shutil.rmtree(out)
@@ -191,7 +192,8 @@ def export_minimal(argv=None) -> int:
     )
     print("exported step")
     prog = converter.to_coreai()
-    prog.optimize()
+    if hasattr(prog, "optimize"):  # coreai-core < 1.0.0b3; b3+ optimizes on build
+        prog.optimize()
     out = Path(args.out)
     if out.exists():
         shutil.rmtree(out)

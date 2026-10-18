@@ -125,7 +125,8 @@ def build_asset(llm, out: Path, PF=QwenPrefillForCoreAI, ST=QwenStepForCoreAI) -
         output_names=["token"],
     )
     prog = converter.to_coreai()
-    prog.optimize()
+    if hasattr(prog, "optimize"):  # coreai-core < 1.0.0b3; b3+ optimizes on build
+        prog.optimize()
     if out.exists():
         shutil.rmtree(out)
     prog.save_asset(out)
@@ -208,7 +209,8 @@ def main(argv=None) -> int:
         ep, entrypoint_name="step_st", input_names=["tok", "pos"],
         state_names=["k_cache", "v_cache"], output_names=["token"])
     prog = converter.to_coreai()
-    prog.optimize()
+    if hasattr(prog, "optimize"):  # coreai-core < 1.0.0b3; b3+ optimizes on build
+        prog.optimize()
     out = scratch / "canary-G_hybrid.aimodel"
     if out.exists():
         shutil.rmtree(out)

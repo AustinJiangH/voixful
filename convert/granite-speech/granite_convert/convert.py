@@ -202,7 +202,8 @@ def main(argv: list[str] | None = None) -> int:
         manifest_windows.append({"frames": w, "audio_len": a, "text_bucket": bucket})
 
     ai_program = converter.to_coreai()
-    ai_program.optimize()
+    if hasattr(ai_program, "optimize"):  # coreai-core < 1.0.0b3; b3+ optimizes on build
+        ai_program.optimize()
     if output_path.exists():
         import shutil
 

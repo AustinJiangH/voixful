@@ -261,7 +261,8 @@ def main(argv: list[str] | None = None) -> int:
     # Step (e): convert, framework-level optimize (no weight quantization), save.
     # `coreai_opt` is NOT invoked here. FP16 default.
     ai_program = converter.to_coreai()
-    ai_program.optimize()
+    if hasattr(ai_program, "optimize"):  # coreai-core < 1.0.0b3; b3+ optimizes on build
+        ai_program.optimize()
     if output_path.exists():
         # save_asset refuses to overwrite (FileExistsError on main.mlirb);
         # treat the output like any build artifact and replace it.
